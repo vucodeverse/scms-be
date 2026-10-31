@@ -121,12 +121,28 @@ public class GlobalExceptionHandler {
         return validation(errors, request);
     }
 
-    @ExceptionHandler({HttpMessageNotReadableException.class, MissingServletRequestParameterException.class,
-            MethodArgumentTypeMismatchException.class})
-    public ResponseEntity<ApiErrorResponse> handleBadRequest(Exception ex, HttpServletRequest request) {
-        log.warn("Bad request at {}: {}", request.getRequestURI(), ex.getMessage());
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiErrorResponse> handleUnreadable(HttpMessageNotReadableException ex,
+                                                             HttpServletRequest request) {
+        // Không trả message Jackson gốc (lộ tên class/field nội bộ của DTO).
+        log.warn("Body không đọc được at {}: {}", request.getRequestURI(), ex.getClass().getSimpleName());
         return build(HttpStatus.BAD_REQUEST, ErrorCode.INVALID_INPUT_PAYLOAD.name(), null,
                 ErrorCode.INVALID_INPUT_PAYLOAD.message(), request, null, null);
+    }
+
+    /** Thiếu/ sai kiểu query param — trả tên param để FE hiển thị đúng field. */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ApiErrorResponse> handleMissingParameter(MissingServletRequestParameterException ex,
+                                                                   HttpServletRequest request) {
+        String message = "Thiếu tham số bắt buộc: " + ex.getParameterName() + ".";
+        return validation(List.of(new FieldErrorItem(ex.getParameterName(), message)), request);
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiErrorResponse> handleTypeMismatch(MethodArgumentTypeMismatchException ex,
+                                                               HttpServletRequest request) {
+        String message = "Giá trị không hợp lệ cho tham số: " + ex.getName() + ".";
+        return validation(List.of(new FieldErrorItem(ex.getName(), message)), request);
     }
 
     @ExceptionHandler(NoResourceFoundException.class)
@@ -139,9 +155,11 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> handleUnexpected(Exception ex, HttpServletRequest request) {
         // Lỗi có sẵn status (vd. HttpRequestMethodNotSupported -> 405): giữ status, không thành 500.
+        // Message Spring của các lỗi này liệt kê method/media-type server hỗ trợ -> trả message generic.
         if (ex instanceof ErrorResponse er && er.getStatusCode().is4xxClientError()) {
             HttpStatus status = HttpStatus.valueOf(er.getStatusCode().value());
-            return build(status, status.name(), null, ex.getMessage(), request, null, null);
+            return build(status, status.name(), null, "Yêu cầu không hợp lệ (" + status.value() + ").",
+                    request, null, null);
         }
         log.error("Unhandled exception at {}", request.getRequestURI(), ex);
         return build(HttpStatus.INTERNAL_SERVER_ERROR, ErrorCode.INTERNAL_SERVER_ERROR.name(), null,

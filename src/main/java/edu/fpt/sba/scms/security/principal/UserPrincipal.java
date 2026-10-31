@@ -1,6 +1,6 @@
-package edu.fpt.sba.scms.dto;
+package edu.fpt.sba.scms.security.principal;
 
-import edu.fpt.sba.scms.security.Roles;
+import edu.fpt.sba.scms.common.enums.Roles;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 
@@ -63,7 +63,7 @@ public record UserPrincipal(
     }
 
     public boolean isCoo() {
-        return Roles.COO.equals(role);
+        return Roles.COO.code().equals(role);
     }
 
     /** Authority = đúng {@code role.code}, không prefix ROLE_ (IMPLEMENTATION.md §8.5). */

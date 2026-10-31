@@ -1,6 +1,6 @@
 package edu.fpt.sba.scms.model;
 
-import edu.fpt.sba.scms.common.enums.UserPosition;
+import edu.fpt.sba.scms.common.enums.Roles;
 import edu.fpt.sba.scms.common.enums.UserStatus;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
@@ -75,9 +75,10 @@ public class User {
     @Column(name = "card_code", length = 50)
     private String cardCode;
 
+    /** Vai trò (= chức danh hiển thị trên POS/Kiosk); {@link #roleCode()} đây là nguồn sự thật của role. */
     @Enumerated(EnumType.STRING)
     @Column(name = "position", length = 20)
-    private UserPosition position;
+    private Roles position;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
@@ -115,6 +116,6 @@ public class User {
     }
 
     public String roleCode() {
-        return role == null ? null : role.getCode();
+        return position == null ? null : position.code();
     }
 }

@@ -1,6 +1,6 @@
 package edu.fpt.sba.scms.service.support;
 
-import edu.fpt.sba.scms.dto.TokenService;
+import edu.fpt.sba.scms.service.TokenService;
 import edu.fpt.sba.scms.model.AuthToken;
 import edu.fpt.sba.scms.security.jwt.JwtTokenProvider;
 import edu.fpt.sba.scms.security.jwt.RefreshTokenStore;
@@ -100,7 +100,7 @@ public class TokenServiceAdapter implements TokenService {
     }
 
     @Override
-    public Integer revokedRefreshTokenOwner(String rawRefreshToken) {
+    public Integer refreshTokenOwner(String rawRefreshToken) {
         Claims claims = tokenProvider.tryParseRefresh(rawRefreshToken);
         return claims == null ? null : JwtTokenProvider.userId(claims);
     }

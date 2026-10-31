@@ -4,7 +4,7 @@ import edu.fpt.sba.scms.dto.request.LoginRequest;
 import edu.fpt.sba.scms.dto.response.CurrentUserResponse;
 import edu.fpt.sba.scms.dto.response.LoginResponse;
 import edu.fpt.sba.scms.dto.response.TokenResponse;
-import edu.fpt.sba.scms.dto.UserPrincipal;
+import edu.fpt.sba.scms.security.principal.UserPrincipal;
 
 /** UC01 — Login / Refresh / Logout / Me (M01). */
 public interface AuthService {

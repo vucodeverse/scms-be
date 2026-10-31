@@ -9,12 +9,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
-import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.authentication.AuthenticationProvider;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.authentication.ProviderNotFoundException;
 import org.springframework.security.config.Customizer;
-import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -98,20 +93,8 @@ public class SecurityConfig {
                         .anyRequest().authenticated())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterAfter(branchContextFilter, JwtAuthenticationFilter.class);
-        // Tầng service tự kiểm mật khẩu (AuthServiceImpl + PasswordEncoder) để phân biệt chính xác
-        // user không tồn tại / sai mật khẩu / tài khoản bị khóa. Nếu để một UserDetailsService bean
-        // trong context, Spring Security 7 sẽ tự dựng thêm DaoAuthenticationProvider không cần thiết.
-        http.authenticationProvider(new AuthenticationProvider() {
-            @Override
-            public Authentication authenticate(Authentication authentication) {
-                throw new ProviderNotFoundException("Chỉ xác thực qua AuthService.");
-            }
-
-            @Override
-            public boolean supports(Class<?> authentication) {
-                return false;
-            }
-        });
+        // Không dùng AuthenticationManager: AuthServiceImpl tự kiểm mật khẩu bằng PasswordEncoder.
+        // (Không có bean UserDetailsService nào trong context -> Spring không tự dựng DaoAuthenticationProvider.)
         return http.build();
     }
 
@@ -130,18 +113,21 @@ public class SecurityConfig {
     }
 
     @Bean
-    public AuthenticationManager authenticationManager(AuthenticationConfiguration configuration) throws Exception {
-        return configuration.getAuthenticationManager();
-    }
-
-    @Bean
     public CorsConfigurationSource corsConfigurationSource() {
+        String[] origins = appProperties.security().cors().allowedOrigins();
+        // allowCredentials=true + wildcard origin = mọi site gửi được cookie/credential sang API này.
+        // Spring sẽ echo lại origin thay vì từ chối -> phải chặn ngay lúc khởi động.
+        if (Arrays.stream(origins).anyMatch(o -> "*".equals(o.trim()))) {
+            throw new IllegalStateException(
+                    "CORS: không được dùng '*' trong app.security.cors.allowed-origins khi bật credentials. "
+                            + "Liệt kê origin cụ thể (vd. http://localhost:5173).");
+        }
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOrigins(Arrays.asList(appProperties.security().cors().allowedOrigins()));
+        config.setAllowedOrigins(Arrays.asList(origins));
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("Authorization", "Content-Type", "X-Branch-Id", "X-Trace-Id",
                 "Idempotency-Key", "X-Kiosk-Key"));
-        config.setExposedHeaders(List.of("X-Trace-Id"));
+        config.setExposedHeaders(List.of("X-Trace-Id", "Retry-After"));
         config.setAllowCredentials(true);
         config.setMaxAge(3600L);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

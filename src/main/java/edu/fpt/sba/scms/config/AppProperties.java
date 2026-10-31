@@ -1,6 +1,8 @@
 package edu.fpt.sba.scms.config;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -9,12 +11,15 @@ import org.springframework.util.StringUtils;
 /**
  * Cấu hình riêng của ứng dụng (prefix {@code app}). Secrets đọc từ ENV; profile prod không có default.
  */
+// @Validated trên record là no-op: validation của @ConfigurationProperties áp lên JavaBean; với record,
+// constructor-bound object bị chặn validate. Bật bằng @EnableConfigurationProperties(AppProperties.class)
+// (class thường) ở JwtConfig.
 @ConfigurationProperties(prefix = "app")
 public record AppProperties(
-        Jwt jwt,
-        Security security,
-        Auth auth,
-        OpenApi openapi,
+        @Valid Jwt jwt,
+        @Valid Security security,
+        @Valid Auth auth,
+        @Valid OpenApi openapi,
         String uploadDir,
         String kioskApiKey,
         SePay sepay) {
@@ -40,7 +45,7 @@ public record AppProperties(
         }
     }
 
-    public record Security(Login login, Refresh refresh, Cors cors) {
+    public record Security(@Valid Login login, @Valid Refresh refresh, @Valid Cors cors) {
 
         public record Login(@Min(1) int loginMaxFailures,
                             @Min(1) int loginFailureWindowMin,
@@ -53,11 +58,11 @@ public record AppProperties(
                               @Min(1) int blockMin) {
         }
 
-        public record Cors(String[] allowedOrigins) {
+        public record Cors(@NotEmpty String[] allowedOrigins) {
         }
     }
 
-    public record Auth(Cookie cookie, Seed seed) {
+    public record Auth(@Valid Cookie cookie, @Valid Seed seed) {
 
         /**
          * Bật khi FE dùng cookie httpOnly cho refresh token (mặc định tắt — §10.1: refresh trả trong body).

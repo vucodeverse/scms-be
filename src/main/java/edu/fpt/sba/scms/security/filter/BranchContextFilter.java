@@ -1,7 +1,7 @@
 package edu.fpt.sba.scms.security.filter;
 
-import edu.fpt.sba.scms.common.BranchContext;
-import edu.fpt.sba.scms.dto.UserPrincipal;
+import edu.fpt.sba.scms.security.BranchContext;
+import edu.fpt.sba.scms.security.principal.UserPrincipal;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;

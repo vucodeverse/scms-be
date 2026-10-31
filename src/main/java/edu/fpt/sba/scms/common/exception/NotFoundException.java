@@ -1,6 +1,7 @@
 package edu.fpt.sba.scms.common.exception;
 
 import edu.fpt.sba.scms.common.enums.ErrorCode;
+import org.springframework.http.HttpStatus;
 
 /** 404 — không tìm thấy; message luôn nêu tên tài nguyên. */
 public class NotFoundException extends BaseException {
@@ -10,6 +11,13 @@ public class NotFoundException extends BaseException {
     }
 
     public NotFoundException(ErrorCode errorCode) {
-        super(errorCode);
+        super(requireNotFound(errorCode));
+    }
+
+    private static ErrorCode requireNotFound(ErrorCode errorCode) {
+        if (errorCode.status() != HttpStatus.NOT_FOUND) {
+            throw new IllegalArgumentException("NotFoundException cần ErrorCode 404, nhận " + errorCode);
+        }
+        return errorCode;
     }
 }

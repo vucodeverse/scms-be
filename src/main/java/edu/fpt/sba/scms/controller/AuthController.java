@@ -6,7 +6,7 @@ import edu.fpt.sba.scms.dto.request.RefreshTokenRequest;
 import edu.fpt.sba.scms.dto.response.CurrentUserResponse;
 import edu.fpt.sba.scms.dto.response.LoginResponse;
 import edu.fpt.sba.scms.dto.response.TokenResponse;
-import edu.fpt.sba.scms.dto.UserPrincipal;
+import edu.fpt.sba.scms.security.principal.UserPrincipal;
 import edu.fpt.sba.scms.service.AuthService;
 import edu.fpt.sba.scms.service.support.RefreshCookieSupport;
 import io.swagger.v3.oas.annotations.Operation;

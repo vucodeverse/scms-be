@@ -4,7 +4,7 @@ import edu.fpt.sba.scms.common.enums.ErrorCode;
 import edu.fpt.sba.scms.common.exception.UnauthorizedException;
 import edu.fpt.sba.scms.repository.AuthTokenRepository;
 import edu.fpt.sba.scms.security.jwt.JwtTokenProvider;
-import edu.fpt.sba.scms.dto.UserPrincipal;
+import edu.fpt.sba.scms.security.principal.UserPrincipal;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;

@@ -10,6 +10,7 @@ import io.swagger.v3.oas.models.servers.Server;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
 
@@ -24,6 +25,7 @@ import java.util.List;
  *   <li>Nút "Authorize" dùng Bearer access token; cột chung {@code X-Trace-Id} / {@code X-Branch-Id} khai báo ở đây.</li>
  * </ul>
  */
+@Validated
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(name = "app.openapi.enabled", havingValue = "true")
 public class OpenApiConfig {

@@ -1,18 +1,20 @@
 package edu.fpt.sba.scms.config;
 
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 /**
- * Bean chung cho xác thực.
+ * Bean chung cho xác thực + bật validation cho {@link AppProperties}.
  * <p>
- * Spring Security 7 (Boot 4) không còn class {@code DaoAuthenticationProvider}; provider mặc định được
- * tạo bởi {@code InitializeUserDetailsBeanManagerConfigurer} từ bean duy nhất
- * {@link edu.fpt.sba.scms.security.user.ScmsUserDetailsService} + {@link PasswordEncoder} bên dưới.
+ * {@code @EnableConfigurationProperties(AppProperties.class)} (khác {@code @ConfigurationPropertiesScan}) sẽ
+ * gắn validator vào binding, nên các ràng buộc {@code @Min}/{@code @Size(32)} trên secret JWT được kiểm lúc
+ * khởi động — app fail-fast nếu ENV thiếu/ngắn thay vì chạy với cấu hình sai.
  */
 @Configuration
+@EnableConfigurationProperties(AppProperties.class)
 public class JwtConfig {
 
     /** BCrypt strength 12 cho mật khẩu đăng nhập (IMPLEMENTATION.md §2). */

@@ -1,8 +1,8 @@
-package edu.fpt.sba.scms.common;
+package edu.fpt.sba.scms.security;
 
 import edu.fpt.sba.scms.common.exception.ForbiddenException;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
-import edu.fpt.sba.scms.security.Roles;
+import edu.fpt.sba.scms.common.enums.Roles;
 
 import java.util.Optional;
 
@@ -15,7 +15,7 @@ public final class BranchContext {
     public record Info(Integer userId, String role, Integer branchId) {
 
         public boolean isCoo() {
-            return Roles.COO.equals(role);
+            return Roles.COO.code().equals(role);
         }
     }
 

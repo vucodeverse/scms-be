@@ -7,13 +7,13 @@ import edu.fpt.sba.scms.common.trace.TraceContextFilter;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.time.Instant;
 
 /** 401 khi chưa xác thực, trả ĐÚNG envelope ApiErrorResponse (IMPLEMENTATION.md §8.2). */
 @Component
@@ -32,9 +32,8 @@ public class ScmsAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
     static void write(HttpServletResponse response, HttpServletRequest request, ObjectMapper mapper,
                       ErrorCode code) throws IOException {
-        ApiErrorResponse body = new ApiErrorResponse(false, HttpServletResponse.SC_UNAUTHORIZED, code.name(),
-                null, code.message(), request.getRequestURI(), Instant.now(),
-                TraceContextFilter.currentTraceId(), null);
+        ApiErrorResponse body = ApiErrorResponse.of(HttpStatus.UNAUTHORIZED, code,
+                request.getRequestURI(), TraceContextFilter.currentTraceId(), null);
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding("UTF-8");

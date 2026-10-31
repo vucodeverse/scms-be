@@ -1,4 +1,4 @@
-package edu.fpt.sba.scms.dto;
+package edu.fpt.sba.scms.service;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -49,6 +49,9 @@ public interface TokenService {
     /** True nếu refresh token (đúng chữ ký, đúng loại) đã được cấp và đã bị thu hồi — dấu hiệu dùng lại token. */
     boolean isRevokedRefreshToken(String rawRefreshToken);
 
-    /** Chủ của refresh token đã bị thu hồi; {@code null} nếu không đọc được. Chỉ để log, không để cấp quyền. */
-    Integer revokedRefreshTokenOwner(String rawRefreshToken);
+    /**
+     * Chủ của refresh token (đọc payload nếu chữ ký hợp lệ); {@code null} nếu không đọc được.
+     * Chỉ để log / làm key rate-limit, KHÔNG dùng để cấp quyền.
+     */
+    Integer refreshTokenOwner(String rawRefreshToken);
 }

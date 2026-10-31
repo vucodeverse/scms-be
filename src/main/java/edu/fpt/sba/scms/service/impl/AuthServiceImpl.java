@@ -13,13 +13,13 @@ import edu.fpt.sba.scms.dto.response.LoginResponse;
 import edu.fpt.sba.scms.dto.response.TokenResponse;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.UserRepository;
-import edu.fpt.sba.scms.security.Roles;
-import edu.fpt.sba.scms.dto.UserPrincipal;
+import edu.fpt.sba.scms.common.enums.Roles;
+import edu.fpt.sba.scms.security.principal.UserPrincipal;
 import edu.fpt.sba.scms.service.AuthService;
 import edu.fpt.sba.scms.service.support.LoginAttemptService;
 import edu.fpt.sba.scms.service.support.RefreshRateLimiter;
-import edu.fpt.sba.scms.dto.TokenService;
-import edu.fpt.sba.scms.dto.TokenService.IssuedToken;
+import edu.fpt.sba.scms.service.TokenService;
+import edu.fpt.sba.scms.service.TokenService.IssuedToken;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -51,24 +51,33 @@ public class AuthServiceImpl implements AuthService {
     private final RefreshRateLimiter refreshRateLimiter;
     private final AuditLogService auditLogService;
 
+    /**
+     * Hash giả để luôn chạy BCrypt kể cả khi username không tồn tại — giữ thời gian phản hồi đồng đều,
+     * tránh dò username qua timing (user enumeration). Không dùng để so mật khẩu thật.
+     */
+    private static final String DUMMY_PASSWORD_HASH =
+            "$2a$12$C9Wq3WkO5r0Q9uJ0cU7YDe4mR0K6W8fL7jYQ3w1sF2bG5hN6oP7qK";
+
     @Override
     @Transactional
     public LoginResponse login(LoginRequest request) {
         String username = request.username().trim();
         loginAttemptService.checkNotLocked(username);
 
-        // Kiểm tra mật khẩu trực tiếp (không qua AuthenticationManager) để phân biệt
-        // user không tồn tại / sai mật khẩu / tài khoản INACTIVE -> cùng INVALID_CREDENTIALS.
-        User user = userRepository.findWithRoleAndBranchByUsername(username)
-                .filter(u -> u.getPasswordHash() != null)
-                .filter(u -> passwordEncoder.matches(request.password(), u.getPasswordHash()))
-                .filter(User::isActive)
-                .orElseGet(() -> {
-                    loginAttemptService.onFailure(username);
-                    auditLogService.log(AuditAction.LOGIN_FAILED, "app_user", null, null,
-                            Map.of("username", username));
-                    throw new BadCredentialsException(Messages.MSG09);
-                });
+        // Không phân biệt user không tồn tại / sai mật khẩu / tài khoản INACTIVE -> cùng INVALID_CREDENTIALS.
+        // Vẫn luôn chạy BCrypt (kể cả khi không có user) để thời gian phản hồi không lộ username tồn tại.
+        User user = userRepository.findWithRoleAndBranchByUsername(username).orElse(null);
+        String passwordHash = (user == null || user.getPasswordHash() == null)
+                ? DUMMY_PASSWORD_HASH
+                : user.getPasswordHash();
+        boolean passwordOk = passwordEncoder.matches(request.password(), passwordHash);
+
+        if (user == null || !passwordOk || !user.isActive()) {
+            loginAttemptService.onFailure(username);
+            auditLogService.log(AuditAction.LOGIN_FAILED, "app_user", null, null,
+                    Map.of("username", username));
+            throw new BadCredentialsException(Messages.MSG09);
+        }
         loginAttemptService.onSuccess(username);
 
         AuthUserDto userDto = toAuthUser(user);
@@ -76,17 +85,16 @@ public class AuthServiceImpl implements AuthService {
                 tokenService.issueAccessToken(user.getId(), user.getUsername(), user.getFullName(),
                         user.roleCode(), user.getBranchId());
 
-        // Refresh token cấp theo rememberMe: rememberMe=true -> hạn dài (JWT_REFRESH_TTL_DAYS);
-        // false -> hạn ngắn "phiên" (app.jwt.session-refresh-ttl-hours). Cấu trúc token giống hệt,
-        // chỉ khác hạn dùng, nên luồng refresh/rotation bên dưới không phải rẽ nhánh.
-        Duration refreshTtl = Boolean.TRUE.equals(request.rememberMe())
-                ? tokenService.refreshTtl()
-                : tokenService.sessionRefreshTtl();
-        IssuedToken refresh =
-                tokenService.issueRefreshToken(user.getId(), user.getUsername(), user.getFullName(),
-                        user.roleCode(), user.getBranchId(), refreshTtl);
-        tokenService.saveRefreshToken(user.getId(), refresh);
-        String refreshToken = refresh.token();
+        // Refresh token chỉ cấp khi rememberMe=true (kéo dài phiên qua refresh token rotation).
+        // rememberMe=false -> chỉ cấp access token, không có refresh token.
+        String refreshToken = null;
+        if (Boolean.TRUE.equals(request.rememberMe())) {
+            IssuedToken refresh =
+                    tokenService.issueRefreshToken(user.getId(), user.getUsername(), user.getFullName(),
+                            user.roleCode(), user.getBranchId(), tokenService.refreshTtl());
+            tokenService.saveRefreshToken(user.getId(), refresh);
+            refreshToken = refresh.token();
+        }
 
         auditLogService.log(AuditAction.LOGIN, "app_user", user.getId(), null,
                 java.util.Map.of("role", user.roleCode()));
@@ -94,7 +102,7 @@ public class AuthServiceImpl implements AuthService {
                 request.roleHint());
 
         return new LoginResponse(access.token(), tokenService.accessTtlSeconds(), refreshToken, userDto,
-                landingFor(user.roleCode()));
+                Roles.landingFor(user.roleCode()));
     }
 
     @Override
@@ -108,7 +116,8 @@ public class AuthServiceImpl implements AuthService {
                 ? refreshTokenFromBody
                 : refreshTokenFromCookie;
         if (raw == null || raw.isBlank()) {
-            throw new UnauthorizedException(ErrorCode.AUTH_TOKEN_EXPIRED);
+            // Không có token ≠ token hết hạn: FE phải biết cần đăng nhập lại.
+            throw new UnauthorizedException(ErrorCode.AUTH_REQUIRED);
         }
 
         // 1) Token phải còn hạn và đúng chữ ký.
@@ -118,7 +127,7 @@ public class AuthServiceImpl implements AuthService {
         // 2) Token đã được cấp nhưng đã bị thu hồi -> dùng lại token cũ (replay). Rotation đã phát token mới
         //    cho client; bản cũ chỉ có thể lọt ra khi bị đánh cắp -> huỷ toàn bộ phiên của user đó.
         if (tokenService.isRevokedRefreshToken(raw)) {
-            Integer owner = tokenService.revokedRefreshTokenOwner(raw);
+            Integer owner = tokenService.refreshTokenOwner(raw);
             if (owner != null) {
                 tokenService.revokeAllRefreshTokens(owner);
                 auditLogService.log(AuditAction.LOGOUT, "app_user", owner, null,
@@ -159,7 +168,7 @@ public class AuthServiceImpl implements AuthService {
         if (raw == null || raw.isBlank()) {
             return "anonymous";
         }
-        Integer owner = tokenService.revokedRefreshTokenOwner(raw);
+        Integer owner = tokenService.refreshTokenOwner(raw);
         return owner == null ? "anonymous" : "user:" + owner;
     }
 
@@ -193,15 +202,5 @@ public class AuthServiceImpl implements AuthService {
 
     private static String branchName(User user) {
         return user.getBranch() == null ? null : user.getBranch().getName();
-    }
-
-    private static String landingFor(String roleCode) {
-        if (Roles.COO.equals(roleCode)) {
-            return "SCR-10";
-        }
-        if (Roles.BRANCH_MANAGER.equals(roleCode)) {
-            return "SCR-07";
-        }
-        return "SCR-04";
     }
 }
