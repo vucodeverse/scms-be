@@ -107,7 +107,7 @@ class ArchitectureTest {
             classes().that().resideInAPackage(ROOT + ".service..")
                     .should().onlyDependOnClassesThat()
                     .resideInAnyPackage(allow("service..", "domain..", "repository..", "model..", "dto..",
-                            "mapper..", "integration..", "common..", "security.jwt..", "config.."));
+                            "mapper..", "integration..", "common..", "security.jwt..", "security.principal..", "config.."));
 
     @ArchTest
     static final ArchRule service_khong_goi_controller_va_handler =

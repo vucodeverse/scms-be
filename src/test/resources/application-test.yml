@@ -16,6 +16,8 @@ app:
       enabled: true
       coo-username: coo
       coo-password: Admin@123
+  openapi:
+    enabled: true
 
 springdoc:
   api-docs:
