@@ -1,0 +1,88 @@
+spring:
+  application:
+    name: scms-be
+  profiles:
+    default: dev
+  datasource:
+    # MySQL 8+: giữ đọc được từ ENV để chuyển môi trường thật không cần sửa file.
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:scms}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8
+    username: ${DB_USER:root}
+    password: ${DB_PASSWORD:}
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Dev: Hibernate tự tạo bảng. Prod: set DDL_AUTO=validate (schema do migration quản lý).
+      ddl-auto: ${DDL_AUTO:update}
+    properties:
+      hibernate:
+        jdbc.time_zone: UTC
+    database-platform: ${DB_DIALECT:org.hibernate.dialect.MySQLDialect}
+
+app:
+  jwt:
+    # Dev: có giá trị mặc định để chạy được ngay. Prod: bắt buộc nạp JWT_ACCESS_SECRET / JWT_REFRESH_SECRET từ ENV (profile prod).
+    access-ttl-min: ${JWT_ACCESS_TTL_MIN:30}
+    refresh-ttl-days: ${JWT_REFRESH_TTL_DAYS:7}
+    # Không rememberMe -> refresh token chỉ sống bằng "phiên" (mặc định 12 giờ). RememberMe -> refresh-ttl-days.
+    session-refresh-ttl-hours: ${JWT_SESSION_REFRESH_TTL_HOURS:12}
+    access-secret: ${JWT_ACCESS_SECRET:dev-only-access-secret-change-me-32bytes-min-x}
+    refresh-secret: ${JWT_REFRESH_SECRET:dev-only-refresh-secret-change-me-32bytes-min}
+    issuer: scms
+  security:
+    login:
+      login-max-failures: ${LOGIN_MAX_FAILURES:5}
+      login-failure-window-min: ${LOGIN_FAILURE_WINDOW_MIN:15}
+      login-lock-min: ${LOGIN_LOCK_MIN:15}
+    refresh:
+      # Chặn refresh loop: 20 lần / 5 phút -> tạm chặn 5 phút (trả ACCOUNT_LOCKED + Retry-After).
+      max-per-window: ${REFRESH_MAX_PER_WINDOW:20}
+      window-min: ${REFRESH_WINDOW_MIN:5}
+      block-min: ${REFRESH_BLOCK_MIN:5}
+    cors:
+      allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:3000}
+  auth:
+    cookie:
+      refresh-enabled: ${AUTH_REFRESH_COOKIE:false}
+      refresh-name: ${AUTH_REFRESH_COOKIE_NAME:scms_rt}
+      refresh-path: ${AUTH_REFRESH_COOKIE_PATH:/api/v1/auth}
+      same-site: ${AUTH_REFRESH_COOKIE_SAMESITE:Lax}
+      # Cookie refresh có Secure hay không. Prod đặt true (luôn HTTPS); dev có thể false.
+      secure: ${AUTH_REFRESH_COOKIE_SECURE:true}
+    # Chỉ dùng ở dev: tạo 4 role + tài khoản COO mặc định nếu DB trống. Prod: false.
+    seed:
+      enabled: ${SEED_DATA:false}
+      coo-username: coo
+      coo-password: ${SEED_COO_PASSWORD:Admin@123}
+  openapi:
+    # Mong muốn bật Swagger. Route Swagger chỉ thật sự public khi CẢ HAI: cờ này = true
+    # VÀ profile đang chạy là dev/test. Ở prod, cờ true cũng không mở (401) — xem SecurityConfig.
+    enabled: ${OPENAPI_ENABLED:false}
+  upload-dir: ${UPLOAD_DIR:./uploads}
+  kiosk-api-key: ${KIOSK_API_KEY:}
+  sepay:
+    mode: ${SEPAY_MODE:sandbox}
+    webhook-secret: ${SEPAY_WEBHOOK_SECRET:}
+
+springdoc:
+  api-docs:
+    enabled: ${OPENAPI_ENABLED:false}
+    path: /v3/api-docs
+  swagger-ui:
+    enabled: ${OPENAPI_ENABLED:false}
+    path: /swagger-ui.html
+
+server:
+  port: ${PORT:8080}
+  error:
+    include-stacktrace: never
+    include-message: never
+  forward-headers-strategy: framework
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized

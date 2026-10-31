@@ -1,0 +1,55 @@
+package edu.fpt.sba.scms.controller.handler;
+
+import edu.fpt.sba.scms.dto.ApiErrorResponse;
+import edu.fpt.sba.scms.dto.ApiResponse;
+import edu.fpt.sba.scms.common.trace.TraceContextFilter;
+import org.springframework.core.MethodParameter;
+import org.springframework.core.io.Resource;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.http.server.ServerHttpRequest;
+import org.springframework.http.server.ServerHttpResponse;
+import org.springframework.http.server.ServletServerHttpResponse;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyAdvice;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+
+/**
+ * Tự bọc ApiResponse cho mọi response thường (IMPLEMENTATION.md §5.5).
+ * Bỏ qua: lỗi (GlobalExceptionHandler đã bọc), file/stream, {@code ResponseEntity} (controller tự quyết HTTP status),
+ * Swagger/springdoc, actuator.
+ */
+@RestControllerAdvice
+public class ApiResponseAdvice implements ResponseBodyAdvice<Object> {
+
+    @Override
+    public boolean supports(MethodParameter returnType, Class<? extends HttpMessageConverter<?>> converterType) {
+        Class<?> type = returnType.getParameterType();
+        return !(ApiResponse.class.isAssignableFrom(type)
+                || ApiErrorResponse.class.isAssignableFrom(type)
+                || org.springframework.http.ResponseEntity.class.isAssignableFrom(type)
+                || Resource.class.isAssignableFrom(type)
+                || StreamingResponseBody.class.isAssignableFrom(type)
+                || byte[].class.equals(type));
+    }
+
+    @Override
+    public Object beforeBodyWrite(Object body, MethodParameter returnType, MediaType selectedContentType,
+                                  Class<? extends HttpMessageConverter<?>> selectedConverterType,
+                                  ServerHttpRequest request, ServerHttpResponse response) {
+        String path = request.getURI().getPath();
+        if (path.startsWith("/v3/api-docs") || path.startsWith("/swagger-ui")
+                || path.startsWith("/actuator") || path.startsWith("/error")) {
+            return body;
+        }
+        if (body instanceof ApiResponse<?> || body instanceof ApiErrorResponse) {
+            return body;
+        }
+        int status = response instanceof ServletServerHttpResponse servlet && servlet.getServletResponse() != null
+                ? servlet.getServletResponse().getStatus()
+                : HttpStatus.OK.value();
+        return new ApiResponse<>(true, status, "SUCCESS", "OK", body,
+                java.time.Instant.now(), TraceContextFilter.currentTraceId());
+    }
+}

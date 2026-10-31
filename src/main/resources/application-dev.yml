@@ -1,0 +1,24 @@
+# Profile dev: bật Swagger UI + api-docs, seed dữ liệu mẫu, log chi tiết.
+app:
+  auth:
+    seed:
+      enabled: true
+    cookie:
+      # Dev chạy HTTP (localhost) nên cookie không đặt Secure; prod đặt true.
+      secure: ${AUTH_REFRESH_COOKIE_SECURE:false}
+  openapi:
+    enabled: true
+
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
+    try-it-out-enabled: true
+    tags-sorter: alpha
+    operations-sorter: method
+
+logging:
+  level:
+    root: INFO
+    edu.fpt.sba.scms: DEBUG

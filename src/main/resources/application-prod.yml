@@ -1,0 +1,32 @@
+# Profile prod: KHÔNG bật Swagger, KHÔNG seed, secrets BẮT BUỘC từ ENV.
+# Thiếu JWT_ACCESS_SECRET / JWT_REFRESH_SECRET / DB_* -> app không khởi động.
+spring:
+  jpa:
+    hibernate:
+      # Prod: không tự sửa schema, Flyway/migration quản lý.
+      ddl-auto: validate
+
+app:
+  jwt:
+    access-secret: ${JWT_ACCESS_SECRET}
+    refresh-secret: ${JWT_REFRESH_SECRET}
+  auth:
+    seed:
+      enabled: false
+    cookie:
+      # Prod luôn qua HTTPS -> cookie phải Secure.
+      secure: true
+  openapi:
+    # Prod: tắt hẳn cả sinh tài liệu lẫn route public (route còn bị SecurityConfig chặn theo profile).
+    enabled: false
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+logging:
+  level:
+    root: INFO
+    edu.fpt.sba.scms: INFO
