@@ -1,5 +1,6 @@
 package edu.fpt.sba.scms.config;
 
+import edu.fpt.sba.scms.config.properties.AppProperties;
 import edu.fpt.sba.scms.model.Role;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.common.enums.UserStatus;
@@ -50,6 +51,10 @@ public class DataSeeder implements ApplicationRunner {
 
         AppProperties.Auth.Seed seed = appProperties.auth().seed();
         if (seed.cooUsername() == null || userRepository.existsByUsername(seed.cooUsername())) {
+            return;
+        }
+        if (seed.cooPassword() == null || seed.cooPassword().isBlank()) {
+            log.info("Bỏ qua tạo tài khoản COO seed: chưa đặt SEED_COO_PASSWORD.");
             return;
         }
         Role coo = roleRepository.findByCode(Roles.COO.code()).orElseThrow();

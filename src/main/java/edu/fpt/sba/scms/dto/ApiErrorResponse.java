@@ -13,30 +13,29 @@ import java.util.List;
  * (GlobalExceptionHandler, Security entry point/handler) để một chỗ duy nhất quyết định cách dựng.
  */
 @Schema(description = "Envelope trả về lỗi")
-@JsonInclude(JsonInclude.Include.NON_NULL)
 public record ApiErrorResponse(
         boolean success,
         int status,
-        @Schema(example = "INVALID_CREDENTIALS") String errorCode,
+        @Schema(example = "INVALID_CREDENTIALS") String code,
         @Schema(description = "Mã con khi errorCode = BUSINESS_RULE_VIOLATION", example = "ORDER_FROZEN")
         String detailCode,
         @Schema(example = "Tên đăng nhập hoặc mật khẩu không đúng.") String message,
         @Schema(example = "/api/v1/auth/login") String path,
         Instant timestamp,
-        String traceId,
+        @JsonInclude(JsonInclude.Include.ALWAYS) String traceId,
         List<FieldErrorItem> fieldErrors) {
 
     public ApiErrorResponse {
         fieldErrors = (fieldErrors == null || fieldErrors.isEmpty()) ? null : List.copyOf(fieldErrors);
     }
 
-    public static ApiErrorResponse of(int status, String errorCode, String detailCode, String message,
+    public static ApiErrorResponse of(int status, String code, String detailCode, String message,
                                       String path, String traceId, List<FieldErrorItem> fieldErrors) {
-        return new ApiErrorResponse(false, status, errorCode, detailCode, message, path,
+        return new ApiErrorResponse(false, status, code, detailCode, message, path,
                 Instant.now(), traceId, fieldErrors);
     }
 
-    /** Factory chính: code lỗi 1-1 với HTTP status, message mặc định của {@link ErrorCode}. */
+    /** Dựng nhanh từ {@link ErrorCode} — dùng ở filter/entry point nơi không có {@code HttpServletRequest}. */
     public static ApiErrorResponse of(HttpStatus status, ErrorCode errorCode, String path, String traceId,
                                       List<FieldErrorItem> fieldErrors) {
         return of(status.value(), errorCode.name(), null, errorCode.message(), path, traceId, fieldErrors);

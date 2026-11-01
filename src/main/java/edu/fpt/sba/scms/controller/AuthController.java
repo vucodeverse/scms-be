@@ -5,10 +5,13 @@ import edu.fpt.sba.scms.dto.request.LoginRequest;
 import edu.fpt.sba.scms.dto.request.RefreshTokenRequest;
 import edu.fpt.sba.scms.dto.response.CurrentUserResponse;
 import edu.fpt.sba.scms.dto.response.LoginResponse;
+import edu.fpt.sba.scms.dto.response.MessageResponse;
 import edu.fpt.sba.scms.dto.response.TokenResponse;
 import edu.fpt.sba.scms.security.principal.UserPrincipal;
+import edu.fpt.sba.scms.security.util.ClientIpResolver;
 import edu.fpt.sba.scms.service.AuthService;
-import edu.fpt.sba.scms.service.support.RefreshCookieSupport;
+import edu.fpt.sba.scms.service.dto.RefreshRequest;
+import edu.fpt.sba.scms.security.web.RefreshCookieSupport;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -46,6 +49,7 @@ public class AuthController {
 
     private final AuthService authService;
     private final RefreshCookieSupport refreshCookieSupport;
+    private final ClientIpResolver clientIp;
 
     @Operation(summary = "Đăng nhập",
             description = "Sai 5 lần trong 15 phút -> khóa 15 phút (ACCOUNT_LOCKED). roleHint chỉ để FE điều hướng.")
@@ -56,8 +60,9 @@ public class AuthController {
             @ApiResponse(responseCode = "401", description = "INVALID_CREDENTIALS | ACCOUNT_LOCKED",
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @PostMapping("/login")
-    public LoginResponse login(@RequestBody @Valid LoginRequest request, HttpServletResponse response) {
-        LoginResponse result = authService.login(request);
+    public LoginResponse login(@RequestBody @Valid LoginRequest request,
+                               HttpServletRequest httpRequest, HttpServletResponse response) {
+        LoginResponse result = authService.login(request, clientIp.of(httpRequest));
         if (refreshCookieSupport.enabled()) {
             refreshCookieSupport.write(response, result.refreshToken());
             return new LoginResponse(result.accessToken(), result.expiresInSec(), null, result.user(),
@@ -74,8 +79,11 @@ public class AuthController {
     @PostMapping("/refresh")
     public TokenResponse refresh(@RequestBody(required = false) RefreshTokenRequest request,
                                  HttpServletRequest httpRequest, HttpServletResponse response) {
-        TokenResponse result = authService.refresh(
-                request == null ? null : request.refreshToken(), refreshCookieSupport.read(httpRequest));
+        TokenResponse result = authService.refresh(new RefreshRequest(
+                request == null ? null : request.refreshToken(),
+                // Tắt cờ cookie thì KHÔNG đọc cookie: client còn cookie cũ không được refresh qua cookie nữa.
+                refreshCookieSupport.enabled() ? refreshCookieSupport.read(httpRequest) : null,
+                clientIp.of(httpRequest)));
         if (refreshCookieSupport.enabled()) {
             refreshCookieSupport.write(response, result.refreshToken());
             return new TokenResponse(result.accessToken(), result.expiresInSec(), null, result.user());
@@ -86,15 +94,16 @@ public class AuthController {
     @Operation(summary = "Đăng xuất",
             description = "Thu hồi toàn bộ refresh token của user và chặn access token hiện tại.",
             security = @SecurityRequirement(name = "bearerAuth"))
-    @ApiResponse(responseCode = "204", description = "Đã đăng xuất")
+    @ApiResponse(responseCode = "200", description = "Đã đăng xuất")
     @PostMapping("/logout")
-    public ResponseEntity<Void> logout(@AuthenticationPrincipal UserPrincipal principal,
-                                       HttpServletResponse response) {
+    public MessageResponse logout(@AuthenticationPrincipal UserPrincipal principal,
+                                  HttpServletResponse response) {
         authService.logout(principal);
         if (refreshCookieSupport.enabled()) {
             refreshCookieSupport.write(response, null);
         }
-        return ResponseEntity.noContent().build();
+        // Trả object (không phải void/null) để ApiResponseAdvice bọc được: Spring MVC bỏ qua ghi body khi null.
+        return new MessageResponse("Đã đăng xuất.");
     }
 
     @Operation(summary = "Thông tin tài khoản đang đăng nhập",

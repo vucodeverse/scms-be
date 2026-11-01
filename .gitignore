@@ -32,3 +32,15 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Secrets / môi trường local — KHÔNG commit ###
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.jks
+secrets/
+application-local.yml
+application-local.yaml
+application-*.local.yml

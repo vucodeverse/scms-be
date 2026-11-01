@@ -75,8 +75,25 @@ class AuthFlowIT {
                                 """))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.success").value(false))
-                .andExpect(jsonPath("$.errorCode").value("INVALID_CREDENTIALS"))
+                .andExpect(jsonPath("$.code").value("INVALID_CREDENTIALS"))
                 .andExpect(jsonPath("$.traceId").isNotEmpty());
+    }
+
+    /**
+     * Username không tồn tại vẫn phải chạy BCrypt với hash giả rồi trả 401 — không được 500.
+     * (Regression: hash giả sai định dạng khiến {@code matches()} ném IllegalArgumentException, vừa lỗi 500
+     * vừa làm lộ username qua khác biệt thời gian phản hồi.)
+     */
+    @Test
+    void unknownUsernameReturns401InvalidCredentials() throws Exception {
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"username":"khong-ton-tai","password":"bat-ky-mat-khau"}
+                                """))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.code").value("INVALID_CREDENTIALS"));
     }
 
     @Test
@@ -87,7 +104,7 @@ class AuthFlowIT {
                                 {"username":"","password":""}
                                 """))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.errorCode").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
                 .andExpect(jsonPath("$.fieldErrors").isArray())
                 .andExpect(jsonPath("$.fieldErrors[*].field").value(org.hamcrest.Matchers.hasItems("username", "password")));
     }
@@ -96,11 +113,11 @@ class AuthFlowIT {
     void meRequiresTokenAndWorksWithToken() throws Exception {
         mockMvc.perform(get("/api/v1/auth/me"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.errorCode").value("AUTH_REQUIRED"));
+                .andExpect(jsonPath("$.code").value("AUTH_REQUIRED"));
 
         mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer abc.def.ghi"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.errorCode").value("AUTH_TOKEN_INVALID"));
+                .andExpect(jsonPath("$.code").value("AUTH_TOKEN_INVALID"));
 
         String accessToken = objectMapper.readTree(login("coo", "Admin@123", false)).at("/data/accessToken").asText();
         mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + accessToken))
@@ -130,7 +147,7 @@ class AuthFlowIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"refreshToken\":\"" + refreshToken + "\"}"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.errorCode").value("AUTH_TOKEN_EXPIRED"));
+                .andExpect(jsonPath("$.code").value("AUTH_TOKEN_EXPIRED"));
     }
 
     @Test
@@ -140,12 +157,13 @@ class AuthFlowIT {
         String refresh = loginJson.at("/data/refreshToken").asText();
 
         mockMvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + access))
-                .andExpect(status().isNoContent());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true));
 
         // Access token đã logout bị chặn
         mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + access))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.errorCode").value("AUTH_REQUIRED"));
+                .andExpect(jsonPath("$.code").value("AUTH_REQUIRED"));
 
         // Refresh token đã bị thu hồi
         mockMvc.perform(post("/api/v1/auth/refresh")

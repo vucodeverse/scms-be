@@ -2,7 +2,7 @@ package edu.fpt.sba.scms.security.jwt;
 
 import edu.fpt.sba.scms.common.enums.ErrorCode;
 import edu.fpt.sba.scms.common.exception.UnauthorizedException;
-import edu.fpt.sba.scms.config.AppProperties;
+import edu.fpt.sba.scms.config.properties.AppProperties;
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
@@ -31,6 +31,10 @@ public class JwtTokenProvider {
     public static final String CLAIM_ROLE_KEY = "role";
     public static final String CLAIM_NAME_KEY = "name";
 
+    private static final int MIN_SECRET_LENGTH = 32;
+    /** Secret dạng Base64 phải ghi rõ tiền tố này; không đọc được tiền tố thì coi là UTF-8. */
+    public static final String BASE64_PREFIX = "base64:";
+
     private static final String CLAIM_UID = "uid";
     private static final String CLAIM_BRANCH = "bid";
     private static final String CLAIM_TYPE = "typ";
@@ -43,6 +47,11 @@ public class JwtTokenProvider {
     private final String issuer;
 
     public JwtTokenProvider(AppProperties props) {
+        if (props.jwt().accessSecret().equals(props.jwt().refreshSecret())) {
+            throw new IllegalStateException(
+                    "JWT_ACCESS_SECRET và JWT_REFRESH_SECRET phải khác nhau: dùng chung thì refresh token "
+                            + "có thể bị dùng thay access token (chỉ khác claim typ).");
+        }
         this.accessKey = keyFrom(props.jwt().accessSecret());
         this.refreshKey = keyFrom(props.jwt().refreshSecret());
         this.accessTtl = Duration.ofMinutes(props.jwt().accessTtlMin());
@@ -90,20 +99,22 @@ public class JwtTokenProvider {
         return sessionRefreshTtl;
     }
 
+    public Claims parseAccess(String token) {
+        return parse(token, accessKey);
+    }
+
     /**
-     * Đọc payload refresh token <b>không ném exception</b> — chỉ dùng để biết ai đang gọi khi token đã
-     * bị thu hồi/bị dùng lại (đối soát log). Không dùng kết quả này để cấp quyền.
+     * Đọc payload refresh token <b>không ném exception</b> — chỉ dùng để biết ai đang gọi khi token đã bị
+     * thu hồi/bị dùng lại (chọn khoá rate-limit). Không dùng kết quả này để cấp quyền.
+     *
+     * @return claims, hoặc {@code null} nếu token sai chữ ký / hết hạn / không phải refresh token
      */
     public Claims tryParseRefresh(String token) {
         try {
-            return parse(token, refreshKey);
-        } catch (RuntimeException e) {
+            return parseRefresh(token);
+        } catch (UnauthorizedException e) {
             return null;
         }
-    }
-
-    public Claims parseAccess(String token) {
-        return parse(token, accessKey);
     }
 
     public Claims parseRefresh(String token) {
@@ -161,21 +172,29 @@ public class JwtTokenProvider {
         }
     }
 
+    /**
+     * Secret là UTF-8 thuần, trừ khi có tiền tố tường minh {@value #BASE64_PREFIX} (khi đó phần sau là Base64).
+     * Không "tự đoán" Base64 theo độ dài: cùng một chuỗi sẽ mang nghĩa khác nhau ở từng môi trường.
+     */
     private static SecretKey keyFrom(String secret) {
-        if (secret == null || secret.length() < 32) {
-            throw new IllegalStateException("JWT secret phải dài tối thiểu 32 ký tự (HS256).");
+        if (secret == null || secret.length() < MIN_SECRET_LENGTH) {
+            throw new IllegalStateException(
+                    "JWT secret phải dài tối thiểu " + MIN_SECRET_LENGTH + " ký tự (HS256).");
         }
-        byte[] raw = secret.getBytes(StandardCharsets.UTF_8);
-        byte[] bytes = raw;
-        try {
-            byte[] decoded = Decoders.BASE64.decode(secret);
-            // Chấp nhận secret dạng Base64 chỉ khi giải mã ra key >= 256 bit.
-            if (decoded.length >= 32) {
-                bytes = decoded;
+        if (secret.startsWith(BASE64_PREFIX)) {
+            byte[] decoded;
+            try {
+                decoded = Decoders.BASE64.decode(secret.substring(BASE64_PREFIX.length()));
+            } catch (RuntimeException e) {
+                throw new IllegalStateException("JWT secret có tiền tố " + BASE64_PREFIX
+                        + " nhưng phần sau không phải Base64 hợp lệ.", e);
             }
-        } catch (RuntimeException ignored) {
-            // không phải Base64 hợp lệ -> dùng ASCII/UTF-8 trực tiếp
+            if (decoded.length < MIN_SECRET_LENGTH) {
+                throw new IllegalStateException("JWT secret Base64 phải giải mã ra tối thiểu "
+                        + MIN_SECRET_LENGTH + " byte (HS256).");
+            }
+            return Keys.hmacShaKeyFor(decoded);
         }
-        return Keys.hmacShaKeyFor(bytes);
+        return Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
     }
 }

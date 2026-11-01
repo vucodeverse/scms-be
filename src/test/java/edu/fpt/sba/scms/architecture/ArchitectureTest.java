@@ -87,6 +87,12 @@ class ArchitectureTest {
                     .should().haveSimpleNameEndingWith("Controller");
 
     /** Advice (@RestControllerAdvice là @ControllerAdvice + @ResponseBody) chỉ được nằm trong controller.handler. */
+    /** Explicit: controller không được lộ entity JPA ra ngoài, kể cả qua DTO (chống N+1 / rò trường nội bộ). */
+    @ArchTest
+    static final ArchRule controller_in_dto_request_response =
+            noClasses().that().resideInAPackage(ROOT + ".dto..")
+                    .should().dependOnClassesThat().resideInAPackage(ROOT + ".model..");
+
     @ArchTest
     static final ArchRule controller_advice_nam_trong_controller_handler =
             classes().that().areAnnotatedWith(ControllerAdvice.class)
@@ -107,7 +113,7 @@ class ArchitectureTest {
             classes().that().resideInAPackage(ROOT + ".service..")
                     .should().onlyDependOnClassesThat()
                     .resideInAnyPackage(allow("service..", "domain..", "repository..", "model..", "dto..",
-                            "mapper..", "integration..", "common..", "security.jwt..", "security.principal..", "config.."));
+                            "mapper..", "integration..", "common..", "security..", "config.."));
 
     @ArchTest
     static final ArchRule service_khong_goi_controller_va_handler =
@@ -116,14 +122,17 @@ class ArchitectureTest {
                     .resideInAnyPackage(deny("controller..", "handler.."));
 
     /**
-     * Ngoại lệ có chủ đích (ĐÃ CHỐT): chỉ AuthServiceImpl (UC01) và TokenServiceAdapter được chạm
-     * security.jwt để phát/thu hồi token; service khác phải đi qua dto.TokenService.
+     * Ngoại lệ có chủ đích (ĐÃ CHỐT): chỉ AuthServiceImpl (UC01) được chạm security.jwt để phát/thu hồi token;
+     * mọi module auth khác cũng được dùng {@code security..} (jwt/filter/principal) nhưng không được
+     * gọi thẳng {@code security.jwt}.
      */
     @ArchTest
     static final ArchRule chi_auth_duoc_dung_security_jwt =
             noClasses().that().resideInAPackage(ROOT + ".service..")
                     .and().doNotHaveFullyQualifiedName(ROOT + ".service.impl.AuthServiceImpl")
-                    .and().doNotHaveFullyQualifiedName(ROOT + ".service.support.TokenServiceAdapter")
+                    // Adapter duy nhất được nối service với security.jwt: nó hiện thực cổng TokenService để
+                    // AuthServiceImpl không phụ thuộc trực tiếp JwtTokenProvider/RefreshTokenStore.
+                    .and().doNotHaveFullyQualifiedName(ROOT + ".service.adapter.TokenServiceAdapter")
                     .should().dependOnClassesThat().resideInAPackage(ROOT + ".security.jwt..");
 
     // ---------------- domain ----------------
@@ -156,6 +165,14 @@ class ArchitectureTest {
                     .resideInAnyPackage(deny("service..", "controller..", "domain..", "mapper..", "dto.."));
 
     // ---------------- model ----------------
+    // ---------------- service / security ----------------
+    /** Tầng service không tự dựng HttpServletRequest/Response (đó là việc của controller). */
+    @ArchTest
+    static final ArchRule service_khong_dung_servlet_api =
+            noClasses().that().resideInAPackage(ROOT + ".service..")
+                    .should().dependOnClassesThat().resideInAPackage("jakarta.servlet..")
+                    .allowEmptyShould(true);
+
     @ArchTest
     static final ArchRule model_chi_phu_thuoc_enum_trong_common =
             noClasses().that().resideInAPackage(ROOT + ".model..")

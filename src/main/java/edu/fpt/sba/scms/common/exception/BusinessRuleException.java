@@ -20,7 +20,8 @@ public class BusinessRuleException extends BaseException {
         this.detailCode = detailCode.name();
     }
 
-    public String getDetailCode() {
+    @Override
+    public String detailCode() {
         return detailCode;
     }
 }

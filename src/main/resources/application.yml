@@ -1,11 +1,13 @@
 spring:
   application:
     name: scms-be
-  profiles:
-    default: dev
+  # KHÔNG đặt spring.profiles.default: profile phải set tường minh qua SPRING_PROFILES_ACTIVE
+  # (dev khi chạy local, prod khi deploy) để tránh vô tình chạy dev mode trên prod.
   datasource:
     # MySQL 8+: giữ đọc được từ ENV để chuyển môi trường thật không cần sửa file.
-    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:scms}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8
+    # TLS BẬT mặc định (PREFERRED: dùng TLS nếu server hỗ trợ, cho phép chạy localhost không TLS).
+    # Prod phải ENFORCE bằng DB_SSL_MODE=VERIFY_IDENTITY (verify luôn CA + hostname) — xem application-prod.yml.
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:scms}?sslMode=${DB_SSL_MODE:PREFERRED}&serverTimezone=UTC&characterEncoding=utf8
     username: ${DB_USER:root}
     password: ${DB_PASSWORD:}
   jpa:
@@ -19,25 +21,36 @@ spring:
     database-platform: ${DB_DIALECT:org.hibernate.dialect.MySQLDialect}
 
 app:
+  probe-x: 1
   jwt:
-    # Dev: có giá trị mặc định để chạy được ngay. Prod: bắt buộc nạp JWT_ACCESS_SECRET / JWT_REFRESH_SECRET từ ENV (profile prod).
     access-ttl-min: ${JWT_ACCESS_TTL_MIN:30}
     refresh-ttl-days: ${JWT_REFRESH_TTL_DAYS:7}
     # Không rememberMe -> refresh token chỉ sống bằng "phiên" (mặc định 12 giờ). RememberMe -> refresh-ttl-days.
     session-refresh-ttl-hours: ${JWT_SESSION_REFRESH_TTL_HOURS:12}
-    access-secret: ${JWT_ACCESS_SECRET:dev-only-access-secret-change-me-32bytes-min-x}
-    refresh-secret: ${JWT_REFRESH_SECRET:dev-only-refresh-secret-change-me-32bytes-min}
-    issuer: scms
+    # File base KHÔNG có secret default: thiếu ENV -> @NotBlank fail-fast lúc khởi động (không bao giờ chạy lặng lẽ
+    # với secret đã public trên git). Giá trị chạy-được-ngay chỉ có ở application-dev.yml.
+    access-secret: ${JWT_ACCESS_SECRET:}
+    refresh-secret: ${JWT_REFRESH_SECRET:}
+    # Bắt buộc: jjwt từ chối parse token khi issuer rỗng/null (mọi request 401).
+    issuer: ${JWT_ISSUER:scms}
   security:
     login:
       login-max-failures: ${LOGIN_MAX_FAILURES:5}
       login-failure-window-min: ${LOGIN_FAILURE_WINDOW_MIN:15}
       login-lock-min: ${LOGIN_LOCK_MIN:15}
+    # Rate-limit theo IP cho /auth/login (bù khoá theo username): 10 lần / 5 phút -> chặn 5 phút.
+    login-ip:
+      max-per-window: ${LOGIN_IP_MAX_PER_WINDOW:10}
+      window-min: ${LOGIN_IP_WINDOW_MIN:5}
+      block-min: ${LOGIN_IP_BLOCK_MIN:5}
     refresh:
       # Chặn refresh loop: 20 lần / 5 phút -> tạm chặn 5 phút (trả ACCOUNT_LOCKED + Retry-After).
       max-per-window: ${REFRESH_MAX_PER_WINDOW:20}
       window-min: ${REFRESH_WINDOW_MIN:5}
       block-min: ${REFRESH_BLOCK_MIN:5}
+      # true CHỈ khi app nằm sau reverse proxy (nginx/ALB/k8s ingress) đã ghi đè X-Forwarded-For.
+      # Bật khi app lộ trực tiếp ra internet = client tự bịa IP để lách rate-limit.
+      trust-forwarded-for: ${TRUST_FORWARDED_FOR:false}
     cors:
       allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:3000}
   auth:
@@ -49,10 +62,11 @@ app:
       # Cookie refresh có Secure hay không. Prod đặt true (luôn HTTPS); dev có thể false.
       secure: ${AUTH_REFRESH_COOKIE_SECURE:true}
     # Chỉ dùng ở dev: tạo 4 role + tài khoản COO mặc định nếu DB trống. Prod: false.
+    # Mật khẩu seed không có default ở base — profile dev tự đặt mặc định; để trống thì bỏ qua tạo user COO.
     seed:
       enabled: ${SEED_DATA:false}
       coo-username: coo
-      coo-password: ${SEED_COO_PASSWORD:Admin@123}
+      coo-password: ${SEED_COO_PASSWORD:}
   openapi:
     # Mong muốn bật Swagger. Route Swagger chỉ thật sự public khi CẢ HAI: cờ này = true
     # VÀ profile đang chạy là dev/test. Ở prod, cờ true cũng không mở (401) — xem SecurityConfig.

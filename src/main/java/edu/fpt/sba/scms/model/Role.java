@@ -11,7 +11,6 @@ import java.time.Instant;
 
 import static jakarta.persistence.GenerationType.IDENTITY;
 
-/** Bảng {@code role} — 4 role cố định COO / BRANCH_MANAGER / CASHIER / STAFF (IMPLEMENTATION.md §7.1 #2). */
 @Entity
 @Table(name = "role")
 @Getter

@@ -1,4 +1,4 @@
-package edu.fpt.sba.scms.service;
+package edu.fpt.sba.scms.service.port;
 
 import java.time.Duration;
 import java.time.Instant;

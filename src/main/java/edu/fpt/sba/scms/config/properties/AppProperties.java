@@ -1,4 +1,4 @@
-package edu.fpt.sba.scms.config;
+package edu.fpt.sba.scms.config.properties;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Min;
@@ -38,14 +38,23 @@ public record AppProperties(
             @Min(1) long sessionRefreshTtlHours,
             @NotBlank @Size(min = 32) String accessSecret,
             @NotBlank @Size(min = 32) String refreshSecret,
-            String issuer) {
+            @NotBlank String issuer) {
 
         public boolean isDevSecret(String secret) {
             return StringUtils.startsWithIgnoreCase(secret, "dev-only-");
         }
     }
 
-    public record Security(@Valid Login login, @Valid Refresh refresh, @Valid Cors cors) {
+    public record Security(@Valid Login login, @Valid LoginIp loginIp, @Valid Refresh refresh, @Valid Cors cors) {
+
+        /**
+         * Rate-limit theo IP cho {@code /auth/login} — bù cho khoá theo username: chặn DoS "hash BCrypt" bằng cách
+         * thử hàng nghìn username khác nhau và chặn việc khoá tài khoản người khác.
+         */
+        public record LoginIp(@Min(1) int maxPerWindow,
+                              @Min(1) int windowMin,
+                              @Min(1) int blockMin) {
+        }
 
         public record Login(@Min(1) int loginMaxFailures,
                             @Min(1) int loginFailureWindowMin,
@@ -55,7 +64,9 @@ public record AppProperties(
         /** Chặn "refresh loop": quá {@code maxPerWindow} lần gọi refresh trong {@code windowMin} phút -> chặn {@code blockMin} phút. */
         public record Refresh(@Min(1) int maxPerWindow,
                               @Min(1) int windowMin,
-                              @Min(1) int blockMin) {
+                              @Min(1) int blockMin,
+                              // true khi chạy sau reverse proxy đã ghi đè X-Forwarded-For; mặc định false vì header client tự bịa được.
+                              boolean trustForwardedFor) {
         }
 
         public record Cors(@NotEmpty String[] allowedOrigins) {
@@ -68,6 +79,8 @@ public record AppProperties(
          * Bật khi FE dùng cookie httpOnly cho refresh token (mặc định tắt — §10.1: refresh trả trong body).
          *
          * @param secure gắn cờ Secure cho cookie — bật ở prod (HTTPS), có thể tắt ở dev (HTTP localhost).
+         *               {@link edu.fpt.sba.scms.security.web.RefreshCookieSupport} từ chối khởi động nếu
+         *               {@code sameSite=None} mà {@code secure=false}.
          */
         public record Cookie(boolean refreshEnabled, String refreshName, String refreshPath, String sameSite,
                              boolean secure) {
@@ -79,5 +92,12 @@ public record AppProperties(
     }
 
     public record SePay(String mode, String webhookSecret) {
+
+        /** Ở prod bắt buộc có secret để verify chữ ký webhook — kiểm bởi {@code ProdConfigGuard}. */
+        @Override
+        public String toString() {
+            return "SePay[mode=" + mode + ", webhookSecret=" + (webhookSecret == null || webhookSecret.isBlank()
+                    ? "" : "******") + "]";
+        }
     }
 }

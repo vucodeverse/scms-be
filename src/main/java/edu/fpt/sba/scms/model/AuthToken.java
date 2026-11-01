@@ -12,10 +12,7 @@ import java.time.Instant;
 
 import static jakarta.persistence.GenerationType.IDENTITY;
 
-/**
- * Bảng {@code auth_token} (IMPLEMENTATION.md §7.1 #43).
- * Type REFRESH: hash SHA-256 của refresh token. ACCESS_REVOKED: jti của access token đã logout, dùng để chặn sớm.
- */
+
 @Entity
 @Table(name = "auth_token")
 @Getter

@@ -1,6 +1,7 @@
 package edu.fpt.sba.scms.common.exception;
 
 import edu.fpt.sba.scms.common.enums.ErrorCode;
+import org.springframework.http.HttpHeaders;
 
 /** 401 ACCOUNT_LOCKED — sai quá số lần cho phép, tạm khóa. Header {@code Retry-After} = {@link #getRetryAfterSeconds()}. */
 public class AccountLockedException extends UnauthorizedException {
@@ -15,5 +16,12 @@ public class AccountLockedException extends UnauthorizedException {
 
     public long getRetryAfterSeconds() {
         return retryAfterSeconds;
+    }
+
+    @Override
+    public HttpHeaders httpHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds));
+        return headers;
     }
 }

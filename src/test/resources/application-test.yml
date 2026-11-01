@@ -11,6 +11,16 @@ spring:
       ddl-auto: create-drop
 
 app:
+  jwt:
+    # Base không còn secret default -> test cấp riêng; hai secret PHẢI khác nhau (JwtTokenProvider chặn nếu trùng).
+    access-secret: test-access-secret-0123456789-abcdefghij
+    refresh-secret: test-refresh-secret-0123456789-zyxwvutsrq
+  security:
+    # Nâng ngưỡng rate-limit IP để luồng login/IT không bị chặn chéo nhau.
+    login-ip:
+      max-per-window: 100000
+      window-min: 5
+      block-min: 5
   auth:
     seed:
       enabled: true

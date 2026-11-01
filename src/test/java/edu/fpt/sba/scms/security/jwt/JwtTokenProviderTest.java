@@ -2,7 +2,7 @@ package edu.fpt.sba.scms.security.jwt;
 
 import edu.fpt.sba.scms.common.enums.ErrorCode;
 import edu.fpt.sba.scms.common.exception.UnauthorizedException;
-import edu.fpt.sba.scms.config.AppProperties;
+import edu.fpt.sba.scms.config.properties.AppProperties;
 import io.jsonwebtoken.Claims;
 import org.junit.jupiter.api.Test;
 
@@ -18,7 +18,8 @@ class JwtTokenProviderTest {
         return new JwtTokenProvider(new AppProperties(
                 new AppProperties.Jwt(30, 7, 24, accessSecret, REFRESH_SECRET, "scms"),
                 new AppProperties.Security(new AppProperties.Security.Login(5, 15, 15),
-                        new AppProperties.Security.Refresh(10, 5, 15),
+                        new AppProperties.Security.LoginIp(10, 5, 5),
+                        new AppProperties.Security.Refresh(10, 5, 15, false),
                         new AppProperties.Security.Cors(new String[]{"http://localhost"})),
                 new AppProperties.Auth(new AppProperties.Auth.Cookie(false, "rt", "/api/v1/auth", "Lax", false),
                         new AppProperties.Auth.Seed(false, "coo", "x")),
@@ -80,7 +81,8 @@ class JwtTokenProviderTest {
                 // TTL tính theo phút -> dùng sleep ngắn không đủ; kiểm bằng token của provider khác secret
                 new AppProperties.Jwt(30, 7, 24, "another-access-secret-0123456789-abcdefgh", REFRESH_SECRET, "scms"),
                 new AppProperties.Security(new AppProperties.Security.Login(5, 15, 15),
-                        new AppProperties.Security.Refresh(10, 5, 15),
+                        new AppProperties.Security.LoginIp(10, 5, 5),
+                        new AppProperties.Security.Refresh(10, 5, 15, false),
                         new AppProperties.Security.Cors(new String[]{"http://localhost"})),
                 new AppProperties.Auth(new AppProperties.Auth.Cookie(false, "rt", "/api/v1/auth", "Lax", false),
                         new AppProperties.Auth.Seed(false, "coo", "x")),

@@ -1,13 +1,24 @@
 # Profile dev: bật Swagger UI + api-docs, seed dữ liệu mẫu, log chi tiết.
+# Chỉ file này mới chứa secret default dạng "dev-only-" (bị ProdConfigGuard chặn ở prod).
 app:
+  jwt:
+    access-secret: ${JWT_ACCESS_SECRET:dev-only-access-secret-change-me-32bytes-min-x}
+    refresh-secret: ${JWT_REFRESH_SECRET:dev-only-refresh-secret-change-me-32bytes-min}
   auth:
     seed:
       enabled: true
+      # Dev chạy được ngay; prod không có default (ProdConfigGuard chặn nếu seed bật ở prod).
+      coo-password: ${SEED_COO_PASSWORD:Admin@123}
     cookie:
       # Dev chạy HTTP (localhost) nên cookie không đặt Secure; prod đặt true.
       secure: ${AUTH_REFRESH_COOKIE_SECURE:false}
   openapi:
     enabled: true
+
+spring:
+  datasource:
+    username: root
+    password: 123
 
 springdoc:
   api-docs:

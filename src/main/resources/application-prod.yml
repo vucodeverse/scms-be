@@ -1,6 +1,10 @@
 # Profile prod: KHÔNG bật Swagger, KHÔNG seed, secrets BẮT BUỘC từ ENV.
 # Thiếu JWT_ACCESS_SECRET / JWT_REFRESH_SECRET / DB_* -> app không khởi động.
 spring:
+  datasource:
+    # Prod: TLS bắt buộc và phải VERIFY cả CA lẫn hostname (chống MITM đánh cắp credential DB).
+    # Có thể override bằng DB_SSL_MODE, nhưng ProdConfigGuard chặn nếu không phải REQUIRE/VERIFY_*.
+    url: jdbc:mysql://${DB_HOST}:${DB_PORT:3306}/${DB_NAME:scms}?sslMode=${DB_SSL_MODE:VERIFY_IDENTITY}&serverTimezone=UTC&characterEncoding=utf8
   jpa:
     hibernate:
       # Prod: không tự sửa schema, Flyway/migration quản lý.

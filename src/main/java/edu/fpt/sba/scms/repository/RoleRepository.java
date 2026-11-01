@@ -9,5 +9,4 @@ public interface RoleRepository extends JpaRepository<Role, Integer> {
 
     Optional<Role> findByCode(String code);
 
-    boolean existsByCode(String code);
 }

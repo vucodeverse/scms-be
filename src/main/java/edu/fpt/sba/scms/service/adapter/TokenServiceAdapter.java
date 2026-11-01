@@ -1,9 +1,9 @@
-package edu.fpt.sba.scms.service.support;
+package edu.fpt.sba.scms.service.adapter;
 
-import edu.fpt.sba.scms.service.TokenService;
+import edu.fpt.sba.scms.service.port.TokenService;
 import edu.fpt.sba.scms.model.AuthToken;
 import edu.fpt.sba.scms.security.jwt.JwtTokenProvider;
-import edu.fpt.sba.scms.security.jwt.RefreshTokenStore;
+import edu.fpt.sba.scms.service.support.RefreshTokenStore;
 import io.jsonwebtoken.Claims;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -71,15 +71,15 @@ public class TokenServiceAdapter implements TokenService {
 
     @Override
     public void saveRefreshToken(Integer userId, IssuedToken token) {
-        refreshTokenStore.saveRefreshToken(userId,
-                new JwtTokenProvider.IssuedToken(token.token(), token.jti(), token.expiresAt()));
+        refreshTokenStore.saveRefreshToken(userId, token.token(), token.jti(), token.expiresAt());
     }
 
     @Override
     public void revokeRefreshToken(String rawRefreshToken) {
         AuthToken token = refreshTokenStore.findUsable(rawRefreshToken);
         if (token != null) {
-            refreshTokenStore.revoke(token);
+            // Thu hồi nguyên tử: hai request revoke đồng thời chỉ một bên thành công — bên thua bỏ qua.
+            refreshTokenStore.revokeIfActive(token);
         }
     }
 

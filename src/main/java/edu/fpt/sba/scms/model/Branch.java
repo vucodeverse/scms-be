@@ -13,7 +13,6 @@ import java.time.LocalTime;
 
 import static jakarta.persistence.GenerationType.IDENTITY;
 
-/** Bảng {@code branch} (IMPLEMENTATION.md §7.1 #1). Trường nghiệp vụ đầy đủ điền dần theo module M02. */
 @Entity
 @Table(name = "branch")
 @Getter

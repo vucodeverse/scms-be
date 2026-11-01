@@ -12,6 +12,9 @@ public enum ErrorCode {
     // ---- 400 ----
     INVALID_INPUT_PAYLOAD("Dữ liệu gửi lên không hợp lệ.", HttpStatus.BAD_REQUEST),
     VALIDATION_ERROR("Dữ liệu không hợp lệ.", HttpStatus.BAD_REQUEST),
+    METHOD_NOT_ALLOWED("Phương thức HTTP không được hỗ trợ cho đường dẫn này.", HttpStatus.METHOD_NOT_ALLOWED),
+    NOT_ACCEPTABLE("Định dạng phản hồi không được hỗ trợ.", HttpStatus.NOT_ACCEPTABLE),
+    UNSUPPORTED_MEDIA_TYPE("Kiểu dữ liệu gửi lên không được hỗ trợ.", HttpStatus.UNSUPPORTED_MEDIA_TYPE),
 
     // ---- 401 ----
     AUTH_REQUIRED("Vui lòng đăng nhập.", HttpStatus.UNAUTHORIZED),
@@ -42,6 +45,9 @@ public enum ErrorCode {
 
     // ---- 422 ----
     BUSINESS_RULE_VIOLATION("Vi phạm quy tắc nghiệp vụ.", HttpStatus.UNPROCESSABLE_CONTENT),
+
+    // ---- 429 ----
+    TOO_MANY_REQUESTS("Bạn thao tác quá nhanh, vui lòng thử lại sau.", HttpStatus.TOO_MANY_REQUESTS),
 
     // ---- 503 ----
     INTEGRATION_UNAVAILABLE("Dịch vụ tích hợp tạm thời không khả dụng.", HttpStatus.SERVICE_UNAVAILABLE),
