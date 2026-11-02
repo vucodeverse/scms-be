@@ -19,7 +19,7 @@ import edu.fpt.sba.scms.security.jwt.JwtTokenProvider;
 import edu.fpt.sba.scms.security.jwt.JwtTokenProvider.IssuedToken;
 import edu.fpt.sba.scms.security.principal.UserPrincipal;
 import edu.fpt.sba.scms.service.AuthService;
-import edu.fpt.sba.scms.service.dto.RefreshRequest;
+import edu.fpt.sba.scms.dto.request.RefreshRequest;
 import edu.fpt.sba.scms.service.support.LoginAttemptService;
 import edu.fpt.sba.scms.service.support.LoginIpRateLimiter;
 import edu.fpt.sba.scms.service.support.RefreshRateLimiter;
