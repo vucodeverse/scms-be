@@ -10,7 +10,7 @@ import edu.fpt.sba.scms.dto.response.TokenResponse;
 import edu.fpt.sba.scms.security.principal.UserPrincipal;
 import edu.fpt.sba.scms.security.util.ClientIpResolver;
 import edu.fpt.sba.scms.service.AuthService;
-import edu.fpt.sba.scms.service.dto.RefreshRequest;
+import edu.fpt.sba.scms.dto.request.RefreshRequest;
 import edu.fpt.sba.scms.security.web.RefreshCookieSupport;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
