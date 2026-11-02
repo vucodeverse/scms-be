@@ -1,4 +1,4 @@
-package edu.fpt.sba.scms.config.security;
+package edu.fpt.sba.scms.config.web;
 
 import edu.fpt.sba.scms.config.properties.AppProperties;
 import lombok.RequiredArgsConstructor;

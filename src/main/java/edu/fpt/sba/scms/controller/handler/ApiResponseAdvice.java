@@ -1,8 +1,8 @@
 package edu.fpt.sba.scms.controller.handler;
 
+import edu.fpt.sba.scms.common.trace.TraceIds;
 import edu.fpt.sba.scms.dto.ApiErrorResponse;
 import edu.fpt.sba.scms.dto.ApiResponse;
-import edu.fpt.sba.scms.common.trace.TraceContextFilter;
 import org.springframework.core.MethodParameter;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpStatus;
@@ -68,6 +68,6 @@ public class ApiResponseAdvice implements ResponseBodyAdvice<Object> {
                 ? servlet.getServletResponse().getStatus()
                 : HttpStatus.OK.value();
         return new ApiResponse<>(true, status, "SUCCESS", "OK", body,
-                Instant.now(), TraceContextFilter.currentTraceId());
+                Instant.now(), TraceIds.current());
     }
 }

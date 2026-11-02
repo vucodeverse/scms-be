@@ -1,9 +1,12 @@
 package edu.fpt.sba.scms.config;
 
 import edu.fpt.sba.scms.config.properties.AppProperties;
+import edu.fpt.sba.scms.common.enums.RecordStatus;
+import edu.fpt.sba.scms.model.Category;
 import edu.fpt.sba.scms.model.Role;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.common.enums.UserStatus;
+import edu.fpt.sba.scms.repository.CategoryRepository;
 import edu.fpt.sba.scms.repository.RoleRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
 import edu.fpt.sba.scms.common.enums.Roles;
@@ -38,6 +41,7 @@ public class DataSeeder implements ApplicationRunner {
 
     private final RoleRepository roleRepository;
     private final UserRepository userRepository;
+    private final CategoryRepository categoryRepository;
     private final PasswordEncoder passwordEncoder;
     private final AppProperties appProperties;
 
@@ -48,6 +52,7 @@ public class DataSeeder implements ApplicationRunner {
             roleRepository.findByCode(entry.getKey()).orElseGet(() -> roleRepository.save(
                     Role.builder().code(entry.getKey()).name(entry.getValue()).build()));
         }
+        seedUncategorizedCategory();
 
         AppProperties.Auth.Seed seed = appProperties.auth().seed();
         if (seed.cooUsername() == null || userRepository.existsByUsername(seed.cooUsername())) {
@@ -69,5 +74,23 @@ public class DataSeeder implements ApplicationRunner {
                 .build());
         log.warn("Đã tạo tài khoản seed '{}' với mật khẩu lấy từ cấu hình — chỉ dùng cho môi trường DEV.",
                 seed.cooUsername());
+    }
+
+    /**
+     * Danh mục hệ thống UNCAT hứng sản phẩm bị gỡ khỏi danh mục (IMPLEMENTATION.md §10.7).
+     * Chạy cùng bước seed để mọi môi trường có sẵn danh mục này trước khi COO thao tác.
+     */
+    private void seedUncategorizedCategory() {
+        if (categoryRepository.findByCode(Category.UNCATEGORIZED_CODE).isPresent()) {
+            return;
+        }
+        categoryRepository.save(Category.builder()
+                .code(Category.UNCATEGORIZED_CODE)
+                .name("Chưa phân loại")
+                .description("Danh mục hệ thống: hứng sản phẩm bị gỡ khỏi danh mục khác.")
+                .sortOrder(Integer.MAX_VALUE)
+                .status(RecordStatus.INACTIVE)
+                .build());
+        log.info("Đã seed danh mục hệ thống {}", Category.UNCATEGORIZED_CODE);
     }
 }

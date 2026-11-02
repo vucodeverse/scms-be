@@ -1,6 +1,7 @@
 package edu.fpt.sba.scms.controller.handler;
 
 import edu.fpt.sba.scms.common.enums.ErrorCode;
+import edu.fpt.sba.scms.common.exception.InvalidFieldValueException;
 import edu.fpt.sba.scms.dto.ApiErrorResponse;
 import edu.fpt.sba.scms.dto.ApiExceptionFactory;
 import edu.fpt.sba.scms.dto.FieldErrorItem;
@@ -72,6 +73,16 @@ public class ValidationExceptionHandler {
                                                                HttpServletRequest request) {
         String message = "Giá trị không hợp lệ cho tham số: " + ex.getName() + ".";
         return badRequest(List.of(new FieldErrorItem(ex.getName(), message)), request);
+    }
+
+    /**
+     * Rule "một field phụ thuộc field khác" (vd. sortBy phải nằm trong whitelist của danh sách) — service ném lỗi
+     * nên cần nêu tên field cho FE. Chỉ dùng cho lỗi đầu vào, không dùng cho lỗi nghiệp vụ (dùng {@code ConflictException}).
+     */
+    @ExceptionHandler(InvalidFieldValueException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidFieldValue(InvalidFieldValueException ex,
+                                                                    HttpServletRequest request) {
+        return badRequest(List.of(new FieldErrorItem(ex.getField(), ex.getMessage())), request);
     }
 
     private static ResponseEntity<ApiErrorResponse> badRequest(List<FieldErrorItem> errors,

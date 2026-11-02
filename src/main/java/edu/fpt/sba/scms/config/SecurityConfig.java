@@ -1,7 +1,7 @@
 package edu.fpt.sba.scms.config;
 
 import edu.fpt.sba.scms.config.properties.AppProperties;
-import edu.fpt.sba.scms.config.security.PublicRoutes;
+import edu.fpt.sba.scms.config.web.PublicRoutes;
 import edu.fpt.sba.scms.security.filter.BranchContextFilter;
 import edu.fpt.sba.scms.security.filter.CsrfCookieFilter;
 import edu.fpt.sba.scms.security.filter.JwtAuthenticationFilter;
@@ -34,8 +34,8 @@ import org.springframework.security.web.csrf.CsrfFilter;
  * </ul>
  * <p>
  * Chi tiết từng nhóm cấu hình được tách ra để mỗi file một trách nhiệm:
- * {@code config.security.CsrfConfig} (CSRF), {@code config.security.CorsConfig} (CORS),
- * {@code config.security.HeadersConfig} (security headers), {@code config.security.PublicRoutes} (route public).
+ * {@code config.web.CsrfConfig} (CSRF), {@code config.web.CorsConfig} (CORS),
+ * {@code config.web.HeadersConfig} (security headers), {@code config.web.PublicRoutes} (route public).
  */
 @Configuration(proxyBeanMethods = false)
 @EnableMethodSecurity

@@ -1,4 +1,4 @@
-package edu.fpt.sba.scms.controller.handler;
+package edu.fpt.sba.scms.security.filter;
 
 import edu.fpt.sba.scms.common.enums.ErrorCode;
 import edu.fpt.sba.scms.dto.ApiErrorResponse;

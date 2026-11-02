@@ -48,27 +48,53 @@ Kết nối MySQL: `sslMode` mặc định `PREFERRED` (TLS nếu server hỗ tr
 
 ```
 edu.fpt.sba.scms
-├─ config/           SecurityConfig (filter chain), JwtConfig, OpenApiConfig, SwaggerRoutes, AsyncConfig,
-│                    AuditConfig, DataSeeder, DevOnlyEndpoints, ProdConfigGuard, properties/AppProperties
-│  └─ security/      CsrfConfig, CorsConfig, HeadersConfig, PublicRoutes
-├─ common/           enums/ (ErrorCode, BusinessErrorCode, AuditAction, UserStatus, Roles, AuthTokenType, BranchStatus),
-│                    exception/, util/ (MoneyUtil, DateTimeUtil, SecurityUtil, ValidationUtil, Messages, ClientIp, EphemeralCounter),
-│                    trace/, audit/ (AuditLogService)
-├─ dto/              envelope (ApiResponse, ApiErrorResponse, FieldErrorItem, PageResponse, ApiExceptionFactory),
-│                    request/, response/
-├─ controller/       AuthController, HealthController
+├─ config/           Composition root: SecurityConfig (filter chain), JwtConfig, OpenApiConfig, SwaggerRoutes,
+│                    AsyncConfig, AuditConfig, DataSeeder, DevOnlyEndpoints, ProdConfigGuard,
+│                    TraceContextFilter (bước 1 filter chain), properties/AppProperties
+│  └─ web/           mảnh cấu hình filter chain: CsrfConfig, CorsConfig, HeadersConfig, PublicRoutes
+├─ common/           Không import tầng nào của ứng dụng
+│  ├─ enums/         ErrorCode, BusinessErrorCode, AuditAction, UserStatus, Roles, AuthTokenType, BranchStatus,
+│  │                 ProductStatus, ProductSizeName, DiscountType, RecordStatus, SortDirection
+│  ├─ exception/     BaseException + các nhánh (NotFound/Conflict/BusinessRule/Forbidden/...)
+│  ├─ util/          MoneyUtil, DateTimeUtil, ValidationUtil, SecurityUtil, Messages, ClientIp,
+│  │                 EphemeralCounter, FixedWindowRateLimiter, FieldError
+│  ├─ specification/ Specifications, TextMatch
+│  ├─ trace/         TraceIds (đọc traceId qua MDC), MdcTaskDecorator
+│  ├─ page/          PageResponse
+│  └─ audit/         AuditLogService
+├─ dto/              Envelope + DTO một chiều (không import tầng nào)
+│  ├─ (root)         ApiResponse, ApiErrorResponse, FieldErrorItem, PageResponse, ApiExceptionFactory,
+│  │                 PageQueryDefaults
+│  ├─ request/       LoginRequest, SaveCategoryRequest, ..., query/ (CategoryListQuery, ProductListQuery, ...)
+│  └─ response/      CategoryDto, ProductDetailDto, TokenResponse, MessageResponse, ...
+├─ controller/       AuthController, HealthController, MenuCategoryController, ProductController,
+│                    ToppingController, VoucherController
 │  └─ handler/       GlobalExceptionHandler (nghiệp vụ), ValidationExceptionHandler (400),
-│                    SecurityExceptionHandler (401/403), ApiResponseAdvice
-├─ service/          AuthService +
-│  └─ impl/ support/ AuthServiceImpl, LoginAttemptService, LoginIpRateLimiter, RefreshRateLimiter,
-│                    RefreshTokenStore, dto/RefreshRequest
-├─ security/         BranchContext, PermissionCatalog, jwt/ (JwtTokenProvider, RefreshTokenStore),
-│                    jwt/JwtTokenProvider, filter/ (TraceContext, JWT, BranchContext, CSRF, entry point, denied handler),
-│                    principal/, web/ (RefreshCookieSupport), util/ (ClientIpResolver)
-├─ repository/       UserRepository, RoleRepository, AuthTokenRepository
-└─ model/            User, Role, Branch, AuthToken, ...
+│                    ApiResponseAdvice (bọc envelope)
+├─ service/          AuthService, CategoryService, ProductService, ProductSizeService, ToppingService, VoucherService
+│  ├─ impl/          XxxServiceImpl
+│  ├─ support/       LoginAttemptService, LoginIpRateLimiter, RefreshRateLimiter, RefreshTokenStore,
+│  │                 MasterDataQueries, MasterDataText, ProductAssembler
+│  ├─ port/          TokenService (cổng hexagonal)
+│  └─ adapter/       TokenServiceAdapter (service -> security.jwt)
+├─ security/         BranchContext, PermissionCatalog
+│  ├─ jwt/           JwtTokenProvider
+│  ├─ filter/        JwtAuthenticationFilter, BranchContextFilter, CsrfCookieFilter, FilterRegistrations,
+│  │                 ScmsAuthenticationEntryPoint, ScmsAccessDeniedHandler, SecurityExceptionHandler (401/403)
+│  ├─ principal/     UserPrincipal
+│  ├─ web/           RefreshCookieSupport
+│  └─ util/          ClientIpResolver
+├─ mapper/           CategoryMapper, ProductMapper, ToppingMapper, VoucherMapper (MapStruct)
+├─ repository/       *Repository + *Specs (CategorySpecs, ProductSpecs, VoucherSpecs, ...), RecipeReadRepository
+├─ integration/      Port/Adapter ra ngoài
+│  └─ inventory/     IngredientLookupPort + IngredientLookupConfig + UnavailableIngredientLookup
+└─ model/            User (bảng app_user), Role, Branch, AuthToken, Category, Product, ProductSize, Topping,
+                     ProductTopping, Voucher, VoucherCategory, VoucherProduct, AuditableEntity
 ```
 
+> Package gốc là `edu.fpt.sba.scms` (tài liệu `IMPLEMENTATION.md` ghi `com.scms`).
+> Chỗ lệch so với bản SDD gốc (handler HTTP, `TraceContextFilter`, `SecurityExceptionHandler`, `config/web`) được ghi ở
+> `IMPLEMENTATION.md` §5.6 và §17 quyết định #17–20.
 > **Profile bắt buộc set tường minh** (`SPRING_PROFILES_ACTIVE=dev` hoặc `prod`): không có default.
 > `ProdConfigGuard` chặn khởi động ở profile `prod` nếu thiếu secret JWT / webhook secret, bật seed,
 > hoặc cookie refresh không `Secure`.

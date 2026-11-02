@@ -1,4 +1,4 @@
-package edu.fpt.sba.scms.service.dto;
+package edu.fpt.sba.scms.dto.request;
 
 /**
  * Đầu vào của {@link edu.fpt.sba.scms.service.AuthService#refresh}: token client gửi (body) + token đọc từ cookie.
