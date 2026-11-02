@@ -86,17 +86,21 @@ class ArchitectureTest {
             classes().that().areAnnotatedWith(RestController.class)
                     .should().haveSimpleNameEndingWith("Controller");
 
-    /** Advice (@RestControllerAdvice là @ControllerAdvice + @ResponseBody) chỉ được nằm trong controller.handler. */
     /** Explicit: controller không được lộ entity JPA ra ngoài, kể cả qua DTO (chống N+1 / rò trường nội bộ). */
     @ArchTest
     static final ArchRule controller_in_dto_request_response =
             noClasses().that().resideInAPackage(ROOT + ".dto..")
                     .should().dependOnClassesThat().resideInAPackage(ROOT + ".model..");
 
+    /**
+     * Advice (@RestControllerAdvice là @ControllerAdvice + @ResponseBody) là tầng HTTP -> {@code controller.handler},
+     * trừ advice của Spring Security ({@code SecurityExceptionHandler}) thuộc {@code security.filter}.
+     */
     @ArchTest
     static final ArchRule controller_advice_nam_trong_controller_handler =
             classes().that().areAnnotatedWith(ControllerAdvice.class)
                     .or().areAnnotatedWith(org.springframework.web.bind.annotation.RestControllerAdvice.class)
+                    .and().doNotHaveSimpleName("SecurityExceptionHandler")
                     .should().resideInAPackage(ROOT + ".controller.handler..");
 
     // ---------------- dto ----------------
@@ -106,6 +110,17 @@ class ArchitectureTest {
                     .should().dependOnClassesThat()
                     .resideInAnyPackage(deny("controller..", "service..", "repository..", "model..", "mapper..",
                             "security..", "domain..", "integration..", "handler..", "util..", "config.."));
+
+    /**
+     * {@code dto.PageQueryDefaults} là hằng số/tiện ích phân trang dùng chung giữa controller và service
+     * (DEFAULT_PAGE/SIZE, MAX_SIZE, đổi 1-based ↔ {@code Pageable}); nó chỉ phụ thuộc Spring Data,
+     * không phụ thuộc tầng nào khác của ứng dụng ngoài chính {@code dto}.
+     */
+    @ArchTest
+    static final ArchRule page_query_defaults_chi_thu_vien_nen =
+            classes().that().haveSimpleName("PageQueryDefaults")
+                    .should().onlyDependOnClassesThat()
+                    .resideInAnyPackage(allow("dto.."));
 
     // ---------------- service ----------------
     @ArchTest
