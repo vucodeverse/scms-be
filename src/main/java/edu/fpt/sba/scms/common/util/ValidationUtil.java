@@ -11,6 +11,10 @@ public final class ValidationUtil {
     public static final Pattern PIN = Pattern.compile("^\\d{4}$");
     /** Mật khẩu 8–72 ký tự, có chữ và số (Q-03 chốt 8). */
     public static final Pattern PASSWORD = Pattern.compile("^(?=.*[A-Za-z])(?=.*\\d).{8,72}$");
+    /** Mã danh mục (IMPLEMENTATION.md §7.1 #4): chữ in hoa, số và gạch ngang, tối đa 10 ký tự. */
+    public static final Pattern CATEGORY_CODE = Pattern.compile("^[A-Z0-9-]{1,10}$");
+    /** Mã voucher (IMPLEMENTATION.md §10.8): in hoa, số và gạch ngang/gạch dưới, tối đa 15 ký tự. */
+    public static final Pattern VOUCHER_CODE = Pattern.compile("^[A-Z0-9_-]{1,15}$");
 
     private ValidationUtil() {
     }
