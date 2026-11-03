@@ -1,6 +1,5 @@
 package edu.fpt.sba.scms.config;
 
-import edu.fpt.sba.scms.common.trace.TraceIds;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -23,8 +22,8 @@ import java.util.regex.Pattern;
 @Order(Ordered.HIGHEST_PRECEDENCE)
 public class TraceContextFilter extends OncePerRequestFilter {
 
-    public static final String TRACE_ID = TraceIds.MDC_KEY;
-    public static final String HEADER = TraceIds.HEADER;
+    public static final String TRACE_ID = "traceId";
+    public static final String HEADER = "X-Trace-Id";
     private static final Pattern SAFE = Pattern.compile("^[A-Za-z0-9-]{8,64}$");
 
     @Override
@@ -45,6 +44,6 @@ public class TraceContextFilter extends OncePerRequestFilter {
 
     /** Trace id hiện tại (cho handler/advice), null nếu ngoài request. */
     public static String currentTraceId() {
-        return TraceIds.current();
+        return MDC.get(TRACE_ID);
     }
 }

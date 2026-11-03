@@ -1,6 +1,6 @@
 package edu.fpt.sba.scms.security.filter;
 
-import edu.fpt.sba.scms.common.trace.TraceIds;
+import edu.fpt.sba.scms.config.TraceContextFilter;
 import tools.jackson.databind.ObjectMapper;
 import edu.fpt.sba.scms.dto.ApiErrorResponse;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
@@ -26,7 +26,7 @@ public class ScmsAccessDeniedHandler implements AccessDeniedHandler {
     public void handle(HttpServletRequest request, HttpServletResponse response,
                        AccessDeniedException accessDeniedException) throws IOException {
         ApiErrorResponse body = ApiErrorResponse.of(HttpStatus.FORBIDDEN, ErrorCode.ACCESS_DENIED,
-                request.getRequestURI(), TraceIds.current(), null);
+                request.getRequestURI(), TraceContextFilter.currentTraceId(), null);
         response.setStatus(HttpServletResponse.SC_FORBIDDEN);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding("UTF-8");

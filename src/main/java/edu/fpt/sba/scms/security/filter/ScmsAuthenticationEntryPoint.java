@@ -1,6 +1,6 @@
 package edu.fpt.sba.scms.security.filter;
 
-import edu.fpt.sba.scms.common.trace.TraceIds;
+import edu.fpt.sba.scms.config.TraceContextFilter;
 import tools.jackson.databind.ObjectMapper;
 import edu.fpt.sba.scms.dto.ApiErrorResponse;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
@@ -33,7 +33,7 @@ public class ScmsAuthenticationEntryPoint implements AuthenticationEntryPoint {
     static void write(HttpServletResponse response, HttpServletRequest request, ObjectMapper mapper,
                       ErrorCode code) throws IOException {
         ApiErrorResponse body = ApiErrorResponse.of(HttpStatus.UNAUTHORIZED, code,
-                request.getRequestURI(), TraceIds.current(), null);
+                request.getRequestURI(), TraceContextFilter.currentTraceId(), null);
         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding("UTF-8");
