@@ -12,6 +12,7 @@ public final class PublicRoutes {
     public static final String[] PUBLIC_URLS = {
             "/api/v1/auth/login",
             "/api/v1/auth/refresh",
+            "/api/v1/attendance/**",
             "/actuator/health",
             "/actuator/health/**",
             "/error",

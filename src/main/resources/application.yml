@@ -67,10 +67,10 @@ app:
       enabled: ${SEED_DATA:false}
       coo-username: coo
       coo-password: ${SEED_COO_PASSWORD:}
-    kiosk:
-      # Pepper cho pin_lookup_hash (SHA-256(branchId:pin:pepper)) — bắt buộc ở MỌI profile, ≥ 16 ký tự.
-      # Không có default: thiếu ENV thì app fail-fast (xem PinConfig). Đổi pepper = mọi PIN cũ phải đặt lại.
-      pin-pepper: ${KIOSK_PIN_PEPPER:}
+  kiosk:
+    # Pepper cho pin_lookup_hash (SHA-256(branchId:pin:pepper)) — bắt buộc ở MỌI profile, ≥ 16 ký tự.
+    # Không có default: thiếu ENV thì app fail-fast (xem PinConfig). Đổi pepper = mọi PIN cũ phải đặt lại.
+    pin-pepper: ${KIOSK_PIN_PEPPER:}
   openapi:
     # Mong muốn bật Swagger. Route Swagger chỉ thật sự public khi CẢ HAI: cờ này = true
     # VÀ profile đang chạy là dev/test. Ở prod, cờ true cũng không mở (401) — xem SecurityConfig.
