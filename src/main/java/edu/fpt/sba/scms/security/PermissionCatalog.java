@@ -24,6 +24,17 @@ public final class PermissionCatalog {
         return Roles.fromCode(roleCode).map(BY_ROLE::get).orElse(List.of());
     }
 
+    /** Toàn bộ danh mục quyền hệ thống để render ma trận phân quyền (UC02). */
+    public static List<String> allPermissions() {
+        return List.of(
+                "BRANCH_MANAGE", "MANAGER_MANAGE", "ROLE_ASSIGN", "MENU_MANAGE", "VOUCHER_MANAGE",
+                "SYNC_PUBLISH", "REPORT_VIEW", "SETTINGS_MANAGE", "PAYROLL_APPROVE", "AUDIT_VIEW",
+                "REFUND_APPROVE", "ORDER_VIEW", "EMPLOYEE_MANAGE", "SCHEDULE_MANAGE", "ATTENDANCE_ADJUST",
+                "INVENTORY_MANAGE", "STOCK_APPROVE", "CASH_APPROVE", "REFUND_REQUEST", "PAYROLL_MANAGE",
+                "SHIFT_MANAGE", "POS_OPERATE", "SHIFT_OPEN", "SHIFT_CLOSE", "CASH_IN_OUT", "KIOSK_ATTENDANCE"
+        );
+    }
+
     private static Map<Roles, List<String>> build() {
         Map<Roles, List<String>> map = new EnumMap<>(Roles.class);
         map.put(Roles.COO, List.of("BRANCH_MANAGE", "MANAGER_MANAGE", "ROLE_ASSIGN", "MENU_MANAGE", "VOUCHER_MANAGE",
