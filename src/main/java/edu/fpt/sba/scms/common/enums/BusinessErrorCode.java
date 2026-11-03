@@ -26,7 +26,8 @@ public enum BusinessErrorCode {
     PRODUCT_UNAVAILABLE("Sản phẩm hiện không khả dụng."),
     AMOUNT_MISMATCH("Số tiền chuyển khoản không khớp."),
     SELF_APPROVAL_FORBIDDEN("Không được tự phê duyệt yêu cầu của chính mình."),
-    ACCOUNT_INACTIVE("Tài khoản đã bị vô hiệu hoá."),
+    BRANCH_NOT_EMPTY("Chi nhánh còn nhân sự đang hoạt động, không thể ngừng hoạt động."),
+    SELF_ACTION_FORBIDDEN("Không được tự thực hiện thao tác này trên tài khoản của chính mình."),
     VOUCHER_IN_USE("Voucher đã được sử dụng, không thể sửa hoặc xoá."),
     DEFAULT_SIZE_IN_USE("Size đang là size mặc định của sản phẩm.");
 
