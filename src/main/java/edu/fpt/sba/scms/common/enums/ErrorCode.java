@@ -22,6 +22,7 @@ public enum ErrorCode {
     AUTH_TOKEN_INVALID("Token không hợp lệ.", HttpStatus.UNAUTHORIZED),
     INVALID_CREDENTIALS("Tên đăng nhập hoặc mật khẩu không đúng.", HttpStatus.UNAUTHORIZED),
     ACCOUNT_LOCKED("Tài khoản tạm khóa do đăng nhập sai quá nhiều lần.", HttpStatus.UNAUTHORIZED),
+    ACCOUNT_INACTIVE("Tài khoản đã bị vô hiệu hoá.", HttpStatus.UNAUTHORIZED),
     INVALID_PIN("Mã PIN không đúng.", HttpStatus.UNAUTHORIZED),
     INVALID_KIOSK_KEY("Kiosk key không hợp lệ.", HttpStatus.UNAUTHORIZED),
 

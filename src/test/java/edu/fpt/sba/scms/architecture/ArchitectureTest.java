@@ -1,6 +1,9 @@
 package edu.fpt.sba.scms.architecture;
 
+import edu.fpt.sba.scms.config.TraceContextFilter;
+
 import com.tngtech.archunit.core.domain.JavaClass;
+import edu.fpt.sba.scms.controller.handler.ApiResponseAdvice;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
@@ -54,14 +57,38 @@ class ArchitectureTest {
     private static final List<String> CONFIG_READERS = List.of(
             ROOT + ".service..", ROOT + ".security..");
 
-    private static String[] allow(String... packages) {
-        Set<String> all = new HashSet<>(Arrays.asList(FRAMEWORK));
+    /**
+     * {@code extraConfigPaths} cho phép khai báo ngoại lệ cụ thể khi tầng <b>không</b> được phụ thuộc config
+     * (vd. {@code config.TraceContextFilter} để dựng envelope có traceId) — không mở cả package cho mọi class.
+     */
+    private static String[] allowWith(String[] extraConfigPaths, String... packages) {
+        Set<String> all = new HashSet<>(Arrays.asList(packages));
         for (String p : packages) {
             all.add(p.startsWith(ROOT) ? p : ROOT + "." + p);
         }
-        all.add(ROOT + ".config..");
+        if (extraConfigPaths == null) {
+            all.add(ROOT + ".config..");
+        } else {
+            all.addAll(Arrays.asList(extraConfigPaths));
+        }
+        return concatFramework(all);
+    }
+
+    private static String[] allow(String... packages) {
+        return allowWith(null, packages);
+    }
+
+    private static String[] concatFramework(Set<String> packages) {
+        Set<String> all = new HashSet<>(Arrays.asList(FRAMEWORK));
+        all.addAll(packages);
         return all.toArray(String[]::new);
     }
+
+    /**
+     * Ngoại lệ duy nhất được phép cho controller / dto: dựng traceId cho envelope. Pattern không có hậu tố
+     * {@code ..} nên chỉ khớp đúng class này — ArchUnit so theo tên, thêm {@code ..} là mở cả package.
+     */
+    static final String[] TRACE_ONLY = {TraceContextFilter.class.getName()};
 
     private static String[] deny(String... packages) {
         return Arrays.stream(packages).map(p -> ROOT + "." + p).toArray(String[]::new);
@@ -71,15 +98,18 @@ class ArchitectureTest {
     @ArchTest
     static final ArchRule controller_chi_dung_dto_service_security_common =
             classes().that().resideInAPackage(ROOT + ".controller..")
+                    // TraceContextFilter nằm ở config nhưng chỉ để dựng traceId cho envelope — ngoại lệ có chủ đích.
+                    .and().doNotHaveFullyQualifiedName(ApiResponseAdvice.class.getName())
                     .should().onlyDependOnClassesThat()
-                    .resideInAnyPackage(allow("controller..", "dto..", "service..", "security..", "common.."));
+                    .resideInAnyPackage(allowWith(TRACE_ONLY, "controller..", "dto..", "service..", "security..",
+                            "common.."));
 
     @ArchTest
     static final ArchRule controller_khong_cham_repository_model_mapper_integration_domain_config =
             noClasses().that().resideInAPackage(ROOT + ".controller..")
                     .should().dependOnClassesThat()
                     .resideInAnyPackage(deny("repository..", "model..", "mapper..", "integration..", "domain..",
-                            "config.."));
+                            "config.PinConfig", "config.properties.."));
 
     @ArchTest
     static final ArchRule controller_phai_co_hau_to_Controller =
@@ -109,7 +139,8 @@ class ArchitectureTest {
             noClasses().that().resideInAPackage(ROOT + ".dto..")
                     .should().dependOnClassesThat()
                     .resideInAnyPackage(deny("controller..", "service..", "repository..", "model..", "mapper..",
-                            "security..", "domain..", "integration..", "handler..", "util..", "config.."));
+                            "security..", "domain..", "integration..", "handler..", "util..",
+                            "config.PinConfig", "config.properties.."));
 
     /**
      * {@code dto.PageQueryDefaults} là hằng số/tiện ích phân trang dùng chung giữa controller và service
@@ -239,12 +270,36 @@ class ArchitectureTest {
                     .because("quy ước: gom toàn bộ enum về common.enums để dễ tra cứu");
 
     // ---------------- config ----------------
+    /**
+     * Ngoại lệ có chủ đích: {@code config.TraceContextFilter} chứa hằng số/{@code currentTraceId()} cho envelope
+     * ({@code controller.handler.ApiResponseAdvice}, {@code dto.ApiExceptionFactory}) — chỉ đọc, không phải bean.
+     */
     @ArchTest
     static final ArchRule chi_config_va_tang_duoc_doc_thuoc_tinh_moi_dung_config =
             noClasses().that().resideOutsideOfPackages(ROOT + ".config..")
                     .and().resideOutsideOfPackages(CONFIG_READERS.toArray(String[]::new))
-                    .should().dependOnClassesThat().resideInAPackage(ROOT + ".config..")
-                    .because("config là composition root: chỉ config + các lớp đọc thuộc tính (service, security) được dùng");
+                    .and().doNotHaveFullyQualifiedName(TraceContextFilter.class.getName())
+                    .should(someoneDependsOnConfigExceptTraceContext())
+                    .because("config là composition root: chỉ config + các lớp đọc thuộc tính (service, security) "
+                            + "+ TraceContextFilter (envelope) được dùng");
+
+    /**
+     * "Phụ thuộc {@code config}" ngoại trừ việc được chú thích bởi {@code @Component} của
+     * {@code config.TraceContextFilter} (mọi {@code @Component}/{@code @Service} đều có cạnh này do meta-annotation
+     * — không phải phụ thuộc thật vào composition root).
+     */
+    private static ArchCondition<JavaClass> someoneDependsOnConfigExceptTraceContext() {
+        return new ArchCondition<>("depend on config, trừ @Component của TraceContextFilter") {
+            @Override
+            public void check(JavaClass item, ConditionEvents events) {
+                item.getDirectDependenciesFromSelf().stream()
+                        .filter(dep -> dep.getTargetClass().getPackageName().startsWith(ROOT + ".config")
+                                && !(dep.getTargetClass().isEquivalentTo(TraceContextFilter.class)
+                                && dep.getDescription().contains("Component")))
+                        .forEach(dep -> events.add(SimpleConditionEvent.violated(item, dep.getDescription())));
+            }
+        };
+    }
 
     /** Model chỉ được dùng common qua các enum trong {@code common.enums}. */
     static final class DependsOnCommonOnlyThroughEnums extends ArchCondition<JavaClass> {

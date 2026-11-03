@@ -12,6 +12,9 @@ app:
     cookie:
       # Dev chạy HTTP (localhost) nên cookie không đặt Secure; prod đặt true.
       secure: ${AUTH_REFRESH_COOKIE_SECURE:false}
+    kiosk:
+      # Dev-only pepper để chạy ngay; prod BẮT BUỘC đặt KIOSK_PIN_PEPPER thật (>= 16 ký tự).
+      pin-pepper: ${KIOSK_PIN_PEPPER:dev-only-pin-pepper-change-me-32bytes-min}
   openapi:
     enabled: true
 

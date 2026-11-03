@@ -26,6 +26,8 @@ app:
       enabled: true
       coo-username: coo
       coo-password: Admin@123
+    kiosk:
+      pin-pepper: test-only-pin-pepper-0123456789abcdef
   openapi:
     enabled: true
 

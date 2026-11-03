@@ -24,6 +24,22 @@ public record AppProperties(
         String kioskApiKey,
         SePay sepay) {
 
+        /**
+         * Pepper cho {@code pin_lookup_hash = SHA-256(branchId:pin:pepper)} — IMPLEMENTATION.md §7.2.
+         * Bean thuộc tính con ({@code @ConfigurationProperties}), khác các record lồng trên (constructor binding):
+         * {@code app.kiosk} nằm ở nhánh khác của cây yml nên bind riêng.
+         * <p>
+         * Bắt buộc ≥ 16 ký tự; {@code PinConfig} fail-fast khi khởi động nếu thiếu.
+         */
+        @ConfigurationProperties(prefix = "app.kiosk")
+        public record Kiosk(@NotBlank @Size(min = 16) String pinPepper) {
+
+            @Override
+            public String toString() {
+                return "Kiosk[pinPepper=******]";
+            }
+        }
+
     /**
      * Cờ Swagger/OpenAPI. Là "mong muốn"; quyết định mở thật vẫn cần thêm điều kiện profile dev/test
      * ({@link edu.fpt.sba.scms.config.DevOnlyEndpoints}) — xem {@code SecurityConfig}.

@@ -1,6 +1,6 @@
 package edu.fpt.sba.scms.dto;
 
-import edu.fpt.sba.scms.common.trace.TraceIds;
+import edu.fpt.sba.scms.config.TraceContextFilter;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpHeaders;
@@ -48,10 +48,10 @@ public final class ApiExceptionFactory {
      * header do filter ghi ra — để response lỗi <b>luôn</b> có mã đối soát với log.
      */
     private static String traceIdOf(HttpServletRequest request) {
-        String traceId = TraceIds.current();
+        String traceId = TraceContextFilter.currentTraceId();
         if (traceId != null) {
             return traceId;
         }
-        return request.getHeader(TraceIds.HEADER);
+        return request.getHeader(TraceContextFilter.HEADER);
     }
 }
