@@ -172,9 +172,12 @@ Lý do:
 
 ### Phase 0 — Chuẩn bị (0.5d)
 - [ ] 0.1 Chốt các câu hỏi mở ở §8 với Người 1/2/3 (đặc biệt: tên bảng, status, dấu ADJUST, định nghĩa net revenue).
-- [ ] 0.2 Thêm dependency `org.apache.poi:poi-ooxml` vào `pom.xml`.
-- [ ] 0.3 Thêm `app.report.source`, `app.report.peak-tier-ratio`, `app.report.max-range-days`,
-      `app.report.open-hour=6`, `app.report.close-hour=23` vào `AppProperties` + `application*.yml`.
+- [x] 0.2 Thêm dependency `org.apache.poi:poi-ooxml` (5.4.1) vào `pom.xml`.
+- [x] 0.3 Cấu hình `app.report.*` (`source`, `max-range-days`, `open-hour`, `close-hour`, `peak-tier-ratio`,
+      `top-products-limit`, `max-top-products`) trong `application.yml`.
+      Làm thành record riêng `config/properties/ReportProperties` (+ enum `common/enums/ReportSource`) thay vì thêm vào
+      `AppProperties` — tránh sửa record dùng chung và các test đang `new AppProperties(...)`. Có mặc định theo SRS và
+      fail-fast khi giá trị sai (`ReportPropertiesTest`).
 
 ### Phase 1 — Nền tảng chung (1d)
 - [ ] 1.1 `dto/request/query/ReportPeriodQuery` (`branchId`, `from`, `to`) + validator `from ≤ to`, `≤ max-range-days`.

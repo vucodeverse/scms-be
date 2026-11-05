@@ -80,6 +80,20 @@ app:
   sepay:
     mode: ${SEPAY_MODE:sandbox}
     webhook-secret: ${SEPAY_WEBHOOK_SECRET:}
+  # Reporting & Analytics (UC34–UC42) — xem ReportProperties và docs/report-analytics/plan.md.
+  report:
+    # none = adapter rỗng (bảng order/shift/inventory chưa có) · sql = đọc native SQL theo schema SDD §5.1.
+    source: ${REPORT_SOURCE:none}
+    # Khoảng lọc from..to tối đa (ngày).
+    max-range-days: ${REPORT_MAX_RANGE_DAYS:366}
+    # Giờ hoạt động chuỗi cho Peak Hours (UC42 BR-01): slot 1 giờ từ 06:00 tới 23:00.
+    open-hour: 6
+    close-hour: 23
+    # Slot là giờ cao điểm khi số đơn >= 80% slot cao nhất (UC42 BR-04).
+    peak-tier-ratio: ${REPORT_PEAK_TIER_RATIO:0.80}
+    # Top sản phẩm bán chạy mặc định (UC41 BR-03) và trần cho tham số limit.
+    top-products-limit: 10
+    max-top-products: 100
 
 springdoc:
   api-docs:
