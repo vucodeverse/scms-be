@@ -29,7 +29,8 @@ public enum BusinessErrorCode {
     BRANCH_NOT_EMPTY("Chi nhánh còn nhân sự đang hoạt động, không thể ngừng hoạt động."),
     SELF_ACTION_FORBIDDEN("Không được tự thực hiện thao tác này trên tài khoản của chính mình."),
     VOUCHER_IN_USE("Voucher đã được sử dụng, không thể sửa hoặc xoá."),
-    DEFAULT_SIZE_IN_USE("Size đang là size mặc định của sản phẩm.");
+    DEFAULT_SIZE_IN_USE("Size đang là size mặc định của sản phẩm."),
+    REPORT_NO_DATA_TO_EXPORT("Không có dữ liệu để xuất.");
 
     private final String message;
 

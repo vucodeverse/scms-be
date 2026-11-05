@@ -80,7 +80,7 @@ Lý do:
 
 - **Khoảng thời gian:** query `from`, `to` kiểu `LocalDate` (giờ VN — `DateTimeUtil.VN`).
   Đổi sang `Instant` UTC nửa mở `[from 00:00 VN, to+1 00:00 VN)` vì DB lưu UTC (`serverTimezone=UTC`).
-  `from > to` → 400 `REPORT_INVALID_DATE_RANGE` (UC35 AT1). Giới hạn tối đa 366 ngày để bảo vệ DB.
+  `from > to` → 400 `VALIDATION_ERROR` field `from` (UC35 AT1). Giới hạn tối đa 366 ngày để bảo vệ DB.
   Mặc định khi thiếu: hôm nay (UC37 "defaults to current date").
 - **Branch scope (BR-04):** dùng `BranchContext.resolveBranchScope(branchId)` có sẵn. BM gửi branch khác → 403
   `CROSS_BRANCH_DENIED` (UC36 AT1). COO bắt buộc truyền `branchId` cho report cấp chi nhánh (hoặc `null` = toàn chuỗi
@@ -159,7 +159,7 @@ Lý do:
 - `GET /api/v1/reports/{type}/export?...` với `type ∈ sales|cash-flow|inventory|hr-shifts|consolidated-financial|product-sales|peak-hours`,
   **cùng bộ filter** với API xem → gọi lại đúng service method (BR-02: file khớp màn hình).
 - Trả `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, `Content-Disposition: attachment; filename=...`.
-- Dữ liệu rỗng → 422 `REPORT_NO_DATA_TO_EXPORT` (AT2). Lỗi sinh file → 500 `REPORT_EXPORT_FAILED` (AT3).
+- Dữ liệu rỗng → 422 `REPORT_NO_DATA_TO_EXPORT` (AT2). Lỗi sinh file → 500 `INTERNAL_SERVER_ERROR` (AT3).
 - Ghi audit `AuditAction.REPORT_EXPORT` (đã có) với `entity=report`, `after={type, filters}` (BR-04/BR-51).
 - Dùng **Apache POI** `SXSSFWorkbook` (streaming, ít RAM). Mỗi report một `ReportSheetWriter` (strategy) —
   thêm report mới không sửa exporter (Open/Closed).
@@ -169,6 +169,8 @@ Lý do:
 ## 4. Breakdown các bước
 
 > Mỗi bước = 1 commit (hoặc 1 PR nhỏ) trên `feature/report-analytics`. Ước lượng tính bằng ngày công.
+
+**Tiến độ (cập nhật 2026-11-05):** Phase 0 ✅ (trừ 0.1 — chờ trao đổi) · Phase 1 ✅ · Phase 2–7 chưa bắt đầu.
 
 ### Phase 0 — Chuẩn bị (0.5d)
 - [ ] 0.1 Chốt các câu hỏi mở ở §8 với Người 1/2/3 (đặc biệt: tên bảng, status, dấu ADJUST, định nghĩa net revenue).
@@ -180,13 +182,23 @@ Lý do:
       fail-fast khi giá trị sai (`ReportPropertiesTest`).
 
 ### Phase 1 — Nền tảng chung (1d)
-- [ ] 1.1 `dto/request/query/ReportPeriodQuery` (`branchId`, `from`, `to`) + validator `from ≤ to`, `≤ max-range-days`.
-- [ ] 1.2 `service/report/ReportPeriod` — đổi `LocalDate` VN → `Instant` UTC nửa mở; danh sách ngày trong kỳ.
-- [ ] 1.3 Thêm `BusinessErrorCode`: `REPORT_INVALID_DATE_RANGE`, `REPORT_NO_DATA_TO_EXPORT`, `REPORT_EXPORT_FAILED`,
-      `REPORT_TYPE_UNSUPPORTED`.
-- [ ] 1.4 `service/report/ReportScope` — bọc `BranchContext.resolveBranchScope` + rule COO bắt buộc `branchId`
-      với report cấp chi nhánh.
-- [ ] 1.5 Unit test cho 1.1–1.4 (biên ngày, timezone, BM khác branch → 403).
+- [x] 1.1 `dto/request/query/report/ReportPeriodQuery` (`branchId`, `from`, `to` — ISO `yyyy-MM-dd`) + interface
+      `ReportPeriodFilter` để các query report sau (Sales thêm `shiftId`, `paymentMethod`…) dùng chung xử lý.
+      Kiểm `from ≤ to` và `≤ max-range-days` đặt ở `ReportPeriod` (tầng dto không được đọc config).
+- [x] 1.2 `service/report/ReportPeriod` — `LocalDate` VN → `Instant` UTC nửa mở `[start, end)`; `dates()`, `dayCount()`,
+      `previous()` (so kỳ trước), `contains()`. Mặc định: trống cả hai → hôm nay; thiếu một đầu → bằng đầu còn lại.
+      "Hôm nay" truyền vào làm tham số (test không phụ thuộc đồng hồ).
+- [x] 1.3 Mã lỗi — **đổi so với dự kiến**, theo quy ước repo (400 = client tự sửa được, 422 = vi phạm trạng thái nghiệp vụ):
+      - `from > to`, vượt `max-range-days`, COO không chọn chi nhánh → **400 `VALIDATION_ERROR`** (`InvalidFieldValueException`
+        kèm field). Không tạo `REPORT_INVALID_DATE_RANGE`.
+      - Thêm `BusinessErrorCode.REPORT_NO_DATA_TO_EXPORT` (422, UC36 AT2).
+      - Lỗi sinh file (UC36 AT3) dùng 500 `INTERNAL_SERVER_ERROR` có sẵn; `type` export không hỗ trợ → 400. Không tạo
+        `REPORT_EXPORT_FAILED` / `REPORT_TYPE_UNSUPPORTED` (`BusinessErrorCode` chỉ dành cho 422).
+- [x] 1.4 `service/report/ReportScope` — `requireBranch()` (report cấp chi nhánh, COO bỏ trống → 400),
+      `branchOrChain()` (UC41/42, COO bỏ trống = toàn chuỗi), `isCoo()`. BM xem chi nhánh khác → 403 `CROSS_BRANCH_DENIED`.
+      *Còn lại cho Phase 3:* kiểm chi nhánh COO gửi có tồn tại không (404) — cần `BranchRepository`, làm trong service.
+- [x] 1.5 Unit test: `ReportPeriodTest` (11), `ReportScopeTest` (9), `ReportPeriodQueryTest` (2).
+      Lưu ý: surefire của repo chỉ chạy class khớp `**/*Test.java` → **không dùng `@Nested`** (class lồng bị bỏ qua lặng lẽ).
 
 ### Phase 2 — Ports + adapter rỗng (0.5d)
 - [ ] 2.1 `integration/report/` : 5 interface port ở §2.2 + row `record` (vd. `PaidOrderRow`, `ShiftCashRow`,
