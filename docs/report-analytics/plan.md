@@ -3,8 +3,14 @@
 > Phụ trách: **Người 5 — Tâm** · Branch: `feature/report-analytics`
 > Nguồn: `Requirements_SBA_Group2_2.pdf` (§3.5.1 UC34, §3.6.1 UC40–42, §3.7.1 UC35–39, BR-04/25–27/38–51)
 > và `Software Design Document Group 2.pdf` (§5.1 Database Design).
-> **Giả định:** các module khác (Order/Payment, Shift/Cash Drawer, Inventory, Attendance) **chưa có code**.
+> **Giả định:** các module khác (Order/Payment, Shift/Cash Drawer, Inventory) **chưa có code**.
 > Module report phải build, test và chạy được độc lập, rồi "cắm" vào dữ liệu thật khi các module đó merge.
+>
+> **Cập nhật theo `origin/main` @ `18794d6`:** Attendance (UC03/04) **đã có** — entity `model/Attendance`,
+> `AttendanceRepository`, enum `AttendanceStatus {CHECKED_IN, COMPLETED}`. Schema thực tế **khác SDD §5.1.18**:
+> cột `user_id`, `branch_id`, `check_in_time`, `check_out_time`, `worked_minutes`, `status`, `notes`;
+> **không có** `shift_id`, `work_date`, `method`, và chưa có trạng thái `LATE` / `EARLY_LEAVE`. Bảng `shift` /
+> `shift_assignment` vẫn chưa có. Ảnh hưởng tới UC39 / UC34 ghi ở §3 (UC39), Phase 6 và §8.
 
 ---
 
@@ -58,7 +64,7 @@ Lý do:
 | `SalesReadPort` | `order`, `order_line`, `payment`, `refund`, `product` | Người 2 | UC34, 35, 40, 41, 42 |
 | `CashFlowReadPort` | `shift`, `cash_transaction`, `payment`(CASH), `refund` | Người 3 (+ Người 1 shift) | UC34, 37 |
 | `InventoryReadPort` | `ingredient`, `inventory`, `stock_transaction`, `stocktake`, `stocktake_line` | Người 3 | UC34, 38 |
-| `AttendanceReadPort` | `attendance`, `shift`, `shift_assignment`, `user` | Người 1 | UC34, 39 |
+| `AttendanceReadPort` | `attendance` (**đã có**), `user`; `shift`, `shift_assignment` (chưa có) | Người 1 | UC34, 39 |
 | `CostReadPort` | `order_line.cogs_amount`, `recipe`, `ingredient.unit_cost` | Người 2 + Người 4 | UC40 |
 | `BranchLookup` | `branch` (đã có `BranchRepository`) | Người 4 (đã có) | tên chi nhánh, list chi nhánh cho COO |
 
@@ -119,6 +125,11 @@ Lý do:
   `hoursWorked` (check-in → check-out, BR-06/07), `lateCount`, `earlyLeaveCount`, `missingCheckoutCount`.
 - Cashier: `ordersProcessed`, `revenuePerHour` (BR-09/10). **Không** có lương (BR-47).
 - Tổng hợp toàn chi nhánh.
+- **Theo schema attendance hiện tại:**
+  - `hoursWorked` lấy từ `worked_minutes` (fallback `check_out_time − check_in_time`); lọc kỳ theo `check_in_time` (giờ VN).
+  - `missingCheckout` = `status = CHECKED_IN` và `check_in_time` trước ngày hôm nay.
+  - `late` / `earlyLeave` / `absent` cần giờ ca dự kiến (`shift.planned_start/end`) + `shift_assignment` → **chưa tính được**,
+    trả `null` kèm cờ `scheduleDataAvailable=false` cho tới khi module Shift merge.
 
 ### UC40 — Consolidated Financial (chỉ COO)
 - Filter: `from`, `to`, `branchIds?` (mặc định tất cả). Per-branch + tổng chuỗi: `revenue`, `cogs`,
@@ -206,7 +217,10 @@ Hàm thuần, nhận row từ port, trả DTO. Mỗi calculator có unit test b�
 
 ### Phase 6 — Adapter SQL thật (2d) — làm song song/sau khi module nguồn chốt schema
 - [ ] 6.1 `ReportSql` — gom tên bảng/cột.
-- [ ] 6.2 `SqlSalesReadAdapter`, `SqlCashFlowReadAdapter`, `SqlInventoryReadAdapter`, `SqlAttendanceReadAdapter`,
+- [ ] 6.1b **Làm được ngay:** `AttendanceReadAdapter` đọc bảng `attendance` thật (query projection/aggregate mới,
+      đặt trong adapter của report — **không sửa** `AttendanceRepository` của Người 1). Bật mặc định, không cần
+      property; test bằng IT trên H2 vì Hibernate đã tạo bảng này.
+- [ ] 6.2 `SqlSalesReadAdapter`, `SqlCashFlowReadAdapter`, `SqlInventoryReadAdapter`, `SqlShiftScheduleReadAdapter`,
       `SqlCostReadAdapter` (`NamedParameterJdbcTemplate`, chỉ SQL chuẩn chạy được cả MySQL & H2).
 - [ ] 6.3 `src/test/resources/report/schema.sql` + `data.sql`: tạo các bảng nguồn theo SDD §5.1 + dữ liệu mẫu
       (2 chi nhánh, nhiều ca, đơn PAID/CANCELLED/REFUNDED, ca chưa đóng, nguyên liệu chưa kiểm kê…).
@@ -270,7 +284,8 @@ nguyên liệu chưa kiểm kê; sản phẩm thiếu recipe; đơn lúc 05:59 /
   status đơn, `payment.method`, `refund.status`.
 - **Người 3 (Operations):** `shift` (expected/counted/variance), `cash_transaction.type`, `stock_transaction` (dấu ADJUST,
   `quantity_base`), `stocktake_line`.
-- **Người 1 (Attendance & Shift):** `attendance.status` (LATE/EARLY_LEAVE), `shift_assignment`, giờ check-in/out.
+- **Người 1 (Attendance & Shift):** attendance đã merge (UC03/04). Còn cần: bảng `shift` + `shift_assignment`
+  (giờ ca dự kiến để tính đi muộn/về sớm/vắng), và việc có liên kết `attendance` ↔ `shift` hay không.
 - **Người 4 (Master Data):** `branch` (đã có), `recipe`, `ingredient.unit_cost`.
 
 Khi module nào merge vào `main`, rebase branch này và bật/chỉnh adapter SQL tương ứng — service/controller report không cần sửa.
@@ -286,3 +301,5 @@ Khi module nào merge vào `main`, rebase branch này và bật/chỉnh adapter 
 5. UC39 chỉ có BM, nhưng UC36 cho COO export "Employee Hours" → COO có được xem HR report của chi nhánh không?
 6. Dashboard COO: xem 1 chi nhánh được chọn hay tổng chuỗi?
 7. Có cần Export PDF (SCR-15 có nút, UC36 không nhắc)?
+8. Bảng `attendance` hiện tại không có `shift_id` và trạng thái LATE/EARLY_LEAVE như SDD: Người 1 có định bổ sung không,
+   hay report tự so `check_in_time` với giờ ca dự kiến?
