@@ -78,7 +78,7 @@ public class RoleServiceImpl implements RoleService {
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public RolePermissionsResponse updateRolePermissions(
             Integer roleId,
             UpdateRolePermissionsRequest request,
@@ -104,7 +104,7 @@ public class RoleServiceImpl implements RoleService {
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public UserDto assignRole(Integer employeeId, AssignRoleRequest request, UserPrincipal principal) {
         return userService.assignRole(employeeId, request, principal);
     }

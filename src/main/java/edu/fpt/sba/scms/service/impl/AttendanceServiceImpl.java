@@ -24,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -39,7 +40,7 @@ public class AttendanceServiceImpl implements AttendanceService {
     private final PinHasher pinHasher;
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public AttendanceResultDto checkIn(PinAttendanceRequest request) {
         User user = authenticateByPin(request);
 
@@ -54,6 +55,8 @@ public class AttendanceServiceImpl implements AttendanceService {
         Attendance attendance = Attendance.builder()
                 .userId(user.getId())
                 .branchId(request.branchId())
+                .workDate(LocalDate.now())
+                .method("PIN")
                 .checkInTime(now)
                 .status(AttendanceStatus.CHECKED_IN)
                 .notes(request.notes())
@@ -66,7 +69,7 @@ public class AttendanceServiceImpl implements AttendanceService {
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public AttendanceResultDto checkOut(PinAttendanceRequest request) {
         User user = authenticateByPin(request);
 
@@ -77,6 +80,12 @@ public class AttendanceServiceImpl implements AttendanceService {
 
         Instant now = Instant.now();
         long workedMinutes = Math.max(0, Duration.between(attendance.getCheckInTime(), now).toMinutes());
+
+        // BR-07: Khoảng cách tối thiểu giữa lần Check-in và Check-out phải >= 15 phút
+        if (workedMinutes < 15) {
+            throw new BusinessRuleException(BusinessErrorCode.ATTENDANCE_MIN_INTERVAL,
+                    "Khoảng cách chấm công tối thiểu giữa lần check-in và check-out phải từ 15 phút trở lên (BR-07).");
+        }
 
         attendance.setCheckOutTime(now);
         attendance.setWorkedMinutes(workedMinutes);
@@ -93,7 +102,7 @@ public class AttendanceServiceImpl implements AttendanceService {
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public AttendanceResultDto cardSwipe(CardAttendanceRequest request) {
         List<User> activeUsers = userRepository.findAllByBranchIdAndStatus(request.branchId(), UserStatus.ACTIVE);
         User user = activeUsers.stream()
@@ -110,9 +119,16 @@ public class AttendanceServiceImpl implements AttendanceService {
             Instant now = Instant.now();
             long workedMinutes = Math.max(0, Duration.between(attendance.getCheckInTime(), now).toMinutes());
 
+            // BR-07: Khoảng cách tối thiểu giữa lần Check-in và Check-out phải >= 15 phút
+            if (workedMinutes < 15) {
+                throw new BusinessRuleException(BusinessErrorCode.ATTENDANCE_MIN_INTERVAL,
+                        "Khoảng cách chấm công tối thiểu giữa lần check-in và check-out phải từ 15 phút trở lên (BR-07).");
+            }
+
             attendance.setCheckOutTime(now);
             attendance.setWorkedMinutes(workedMinutes);
             attendance.setStatus(AttendanceStatus.COMPLETED);
+            attendance.setMethod("RFID");
             if (request.notes() != null && !request.notes().isBlank()) {
                 attendance.setNotes(request.notes());
             }
@@ -125,6 +141,8 @@ public class AttendanceServiceImpl implements AttendanceService {
             Attendance attendance = Attendance.builder()
                     .userId(user.getId())
                     .branchId(request.branchId())
+                    .workDate(LocalDate.now())
+                    .method("RFID")
                     .checkInTime(now)
                     .status(AttendanceStatus.CHECKED_IN)
                     .notes(request.notes())
