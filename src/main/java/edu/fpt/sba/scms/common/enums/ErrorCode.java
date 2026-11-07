@@ -32,6 +32,9 @@ public enum ErrorCode {
 
     // ---- 404 ----
     RESOURCE_NOT_FOUND("Không tìm thấy dữ liệu.", HttpStatus.NOT_FOUND),
+    INGREDIENT_NOT_FOUND("Không tìm thấy nguyên vật liệu.", HttpStatus.NOT_FOUND),
+    INVENTORY_NOT_FOUND("Không tìm thấy dữ liệu tồn kho của nguyên liệu.", HttpStatus.NOT_FOUND),
+    STOCKTAKE_NOT_FOUND("Không tìm thấy đợt kiểm kê tương ứng.", HttpStatus.NOT_FOUND),
 
     // ---- 409 ----
     RESOURCE_CONFLICT("Dữ liệu đã tồn tại.", HttpStatus.CONFLICT),
@@ -43,9 +46,12 @@ public enum ErrorCode {
     DUPLICATE_CARD("Thẻ đã gắn với nhân viên khác.", HttpStatus.CONFLICT),
     SCHEDULE_CONFLICT("Lịch làm việc bị trùng.", HttpStatus.CONFLICT),
     INVALID_STATE_TRANSITION("Dữ liệu đã thay đổi hoặc trạng thái không hợp lệ, vui lòng tải lại.", HttpStatus.CONFLICT),
+    ACTIVE_STOCKTAKE_EXISTS("Chi nhánh đang có một phiên kiểm kê đang mở.", HttpStatus.CONFLICT),
+    STOCKTAKE_ALREADY_CLOSED("Đợt kiểm kê này đã được cân đối hoặc đóng trước đó.", HttpStatus.CONFLICT),
 
     // ---- 422 ----
     BUSINESS_RULE_VIOLATION("Vi phạm quy tắc nghiệp vụ.", HttpStatus.UNPROCESSABLE_CONTENT),
+    INSUFFICIENT_STOCK("Tồn kho hiện tại không đủ để xuất.", HttpStatus.UNPROCESSABLE_CONTENT),
 
     // ---- 429 ----
     TOO_MANY_REQUESTS("Bạn thao tác quá nhanh, vui lòng thử lại sau.", HttpStatus.TOO_MANY_REQUESTS),

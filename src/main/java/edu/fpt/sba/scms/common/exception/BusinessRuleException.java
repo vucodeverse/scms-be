@@ -20,6 +20,15 @@ public class BusinessRuleException extends BaseException {
         this.detailCode = detailCode.name();
     }
 
+    public BusinessRuleException(ErrorCode errorCode) {
+        this(errorCode, errorCode.message());
+    }
+
+    public BusinessRuleException(ErrorCode errorCode, String message) {
+        super(ErrorCode.BUSINESS_RULE_VIOLATION, message);
+        this.detailCode = errorCode.name();
+    }
+
     @Override
     public String detailCode() {
         return detailCode;
