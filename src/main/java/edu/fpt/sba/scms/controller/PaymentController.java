@@ -3,6 +3,8 @@ package edu.fpt.sba.scms.controller;
 import edu.fpt.sba.scms.dto.ApiErrorResponse;
 import edu.fpt.sba.scms.dto.request.CreateOrderRequest;
 import edu.fpt.sba.scms.dto.request.GenerateQrRequest;
+import edu.fpt.sba.scms.dto.request.ProcessCashPaymentRequest;
+import edu.fpt.sba.scms.dto.response.CashPaymentResponse;
 import edu.fpt.sba.scms.dto.response.OrderResponse;
 import edu.fpt.sba.scms.dto.response.PaymentStatusResponse;
 import edu.fpt.sba.scms.dto.response.VietQrResponse;
@@ -49,6 +51,22 @@ public class PaymentController {
             @RequestBody @Valid CreateOrderRequest request,
             @AuthenticationPrincipal UserPrincipal principal) {
         return paymentService.createOrder(request, principal);
+    }
+
+    @Operation(summary = "Thanh toán đơn hàng bằng tiền mặt tại quầy POS (UC19)",
+            description = "Thu ngân nhận tiền mặt từ khách, hệ thống kiểm tra số tiền hợp lệ, tính tiền thối, chuyển đơn sang PAID và đóng băng đơn hàng (BR-26).")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Thanh toán thành công"),
+            @ApiResponse(responseCode = "404", description = "Không tìm thấy đơn hàng",
+                    content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "422", description = "Đơn hàng đã thanh toán hoặc tiền đưa không đủ",
+                    content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
+    @PostMapping("/cash")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER', 'STAFF')")
+    public CashPaymentResponse processCashPayment(
+            @RequestBody @Valid ProcessCashPaymentRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return paymentService.processCashPayment(request, principal);
     }
 
     @Operation(summary = "Tạo mã VietQR động theo đơn hàng (UC43)",

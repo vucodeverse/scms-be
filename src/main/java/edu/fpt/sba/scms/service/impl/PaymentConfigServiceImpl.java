@@ -36,7 +36,7 @@ public class PaymentConfigServiceImpl implements PaymentConfigService {
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public PaymentConfigResponse updateConfig(UpdatePaymentConfigRequest request, UserPrincipal principal) {
         PaymentConfig config = getOrCreateDefault();
 

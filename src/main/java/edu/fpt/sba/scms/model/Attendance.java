@@ -20,6 +20,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.Instant;
+import java.time.LocalDate;
 
 import static jakarta.persistence.GenerationType.IDENTITY;
 
@@ -63,6 +64,12 @@ public class Attendance {
     @Column(name = "worked_minutes")
     private Long workedMinutes;
 
+    @Column(name = "work_date", nullable = false)
+    private LocalDate workDate;
+
+    @Column(name = "method", nullable = false, length = 20)
+    private String method;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     private AttendanceStatus status;
@@ -81,6 +88,12 @@ public class Attendance {
         Instant now = Instant.now();
         if (createdAt == null) {
             createdAt = now;
+        }
+        if (workDate == null) {
+            workDate = LocalDate.now();
+        }
+        if (method == null) {
+            method = "PIN";
         }
         if (status == null) {
             status = AttendanceStatus.CHECKED_IN;

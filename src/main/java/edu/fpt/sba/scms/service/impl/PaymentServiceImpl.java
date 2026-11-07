@@ -12,7 +12,9 @@ import edu.fpt.sba.scms.common.exception.BusinessRuleException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
 import edu.fpt.sba.scms.common.exception.UnauthorizedException;
 import edu.fpt.sba.scms.dto.request.CreateOrderRequest;
+import edu.fpt.sba.scms.dto.request.ProcessCashPaymentRequest;
 import edu.fpt.sba.scms.dto.request.SepayWebhookRequest;
+import edu.fpt.sba.scms.dto.response.CashPaymentResponse;
 import edu.fpt.sba.scms.dto.response.OrderResponse;
 import edu.fpt.sba.scms.dto.response.PaymentStatusResponse;
 import edu.fpt.sba.scms.dto.response.VietQrResponse;
@@ -54,7 +56,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final AuditLogService auditLogService;
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public OrderResponse createOrder(CreateOrderRequest request, UserPrincipal principal) {
         Order order = Order.builder()
                 .branchId(request.branchId())
@@ -74,7 +76,66 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
+    public CashPaymentResponse processCashPayment(ProcessCashPaymentRequest request, UserPrincipal principal) {
+        Order order = orderRepository.findById(request.orderId())
+                .orElseThrow(() -> new NotFoundException("đơn hàng"));
+
+        // BR-26: Đơn hàng đã thanh toán bị đóng băng
+        if (order.isPaid()) {
+            throw new BusinessRuleException(BusinessErrorCode.ORDER_FROZEN, "Đơn hàng đã được thanh toán trước đó.");
+        }
+
+        BigDecimal finalAmount = order.getFinalAmount() != null ? order.getFinalAmount() : BigDecimal.ZERO;
+        BigDecimal cashReceived = request.cashReceived();
+
+        // AT1: Tiền khách đưa nhỏ hơn tổng tiền phải trả
+        if (cashReceived.compareTo(finalAmount) < 0) {
+            throw new BusinessRuleException(BusinessErrorCode.CASH_RECEIVED_LT_TOTAL,
+                    String.format("Tiền khách đưa (%s đ) nhỏ hơn tổng tiền thanh toán (%s đ).", cashReceived, finalAmount));
+        }
+
+        BigDecimal changeReturned = cashReceived.subtract(finalAmount);
+        Instant now = Instant.now();
+
+        // Cập nhật trạng thái đơn hàng sang PAID
+        order.setStatus(OrderStatus.PAID);
+        order.setPaidAt(now);
+        orderRepository.save(order);
+
+        // Tạo bản ghi Payment với phương thức CASH
+        Payment payment = Payment.builder()
+                .orderId(order.getId())
+                .method(PaymentMethod.CASH)
+                .amount(finalAmount)
+                .receivedAmount(cashReceived)
+                .status(PaymentStatus.SUCCESS)
+                .build();
+        Payment savedPayment = paymentRepository.save(payment);
+
+        // BR-51: Ghi log kiểm toán
+        auditLogService.log(AuditAction.PAYMENT_SUCCESS, "payment", savedPayment.getId(), null,
+                "CASH: " + finalAmount + " VND (Received: " + cashReceived + ", Change: " + changeReturned + ")");
+        auditLogService.log(AuditAction.ORDER_PAID, "order", order.getId(), OrderStatus.PENDING.name(), OrderStatus.PAID.name());
+
+        log.info("Thanh toán tiền mặt thành công cho đơn hàng ID={}: Phải trả={}, Khách đưa={}, Thối lại={}",
+                order.getId(), finalAmount, cashReceived, changeReturned);
+
+        return new CashPaymentResponse(
+                order.getId(),
+                order.getStatus(),
+                savedPayment.getStatus(),
+                savedPayment.getMethod(),
+                finalAmount,
+                cashReceived,
+                changeReturned,
+                now,
+                "Thanh toán tiền mặt thành công. Tiền thối lại: " + changeReturned.toPlainString() + " đ."
+        );
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public VietQrResponse generateVietQr(Integer orderId, UserPrincipal principal) {
         Order order = orderRepository.findById(orderId)
                 .orElseThrow(() -> new NotFoundException("đơn hàng"));
@@ -138,7 +199,7 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public PaymentStatusResponse processSepayWebhook(SepayWebhookRequest payload, String authHeader, String rawPayload) {
         log.info("Nhận Webhook từ SePay: transId={}, gateway={}, amount={}, content={}",
                 payload.id(), payload.gateway(), payload.transferAmount(), payload.content());

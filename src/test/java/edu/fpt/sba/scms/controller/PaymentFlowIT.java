@@ -229,4 +229,100 @@ class PaymentFlowIT {
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("AUTH_TOKEN_INVALID"));
     }
+
+    // =========================================================================
+    // UC19: Process Cash Payment (Thanh toán tiền mặt tại quầy POS)
+    // =========================================================================
+
+    @Test
+    void testCashPayment_Success() throws Exception {
+        String token = cooToken();
+        int branchId = createBranch(token, "BR" + SEQ.incrementAndGet());
+        BigDecimal totalAmount = new BigDecimal("65000.00");
+        int orderId = createOrder(token, branchId, totalAmount);
+
+        // Khách đưa 100,000 đ cho đơn 65,000 đ -> Tiền thối 35,000 đ
+        String cashPayload = """
+                {
+                    "orderId": %d,
+                    "cashReceived": 100000,
+                    "notes": "Khách trả tiền mặt 100k"
+                }
+                """.formatted(orderId);
+
+        mockMvc.perform(post("/api/v1/payments/cash")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(JSON)
+                        .content(cashPayload))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.orderId").value(orderId))
+                .andExpect(jsonPath("$.data.orderStatus").value("PAID"))
+                .andExpect(jsonPath("$.data.paymentStatus").value("SUCCESS"))
+                .andExpect(jsonPath("$.data.paymentMethod").value("CASH"))
+                .andExpect(jsonPath("$.data.totalAmount").value(65000))
+                .andExpect(jsonPath("$.data.cashReceived").value(100000))
+                .andExpect(jsonPath("$.data.changeReturned").value(35000));
+
+        // Kiểm tra tra cứu trạng thái đơn hàng (UC20) xác nhận đã PAID
+        mockMvc.perform(get("/api/v1/payments/orders/" + orderId + "/status")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.orderStatus").value("PAID"))
+                .andExpect(jsonPath("$.data.paymentStatus").value("SUCCESS"))
+                .andExpect(jsonPath("$.data.paymentMethod").value("CASH"));
+    }
+
+    @Test
+    void testCashPayment_InsufficientCash_ThrowsBusinessRuleException() throws Exception {
+        String token = cooToken();
+        int branchId = createBranch(token, "BR" + SEQ.incrementAndGet());
+        BigDecimal totalAmount = new BigDecimal("65000.00");
+        int orderId = createOrder(token, branchId, totalAmount);
+
+        // Khách đưa 50,000 đ nhưng đơn là 65,000 đ -> Lỗi CASH_RECEIVED_LT_TOTAL (AT1)
+        String cashPayload = """
+                {
+                    "orderId": %d,
+                    "cashReceived": 50000
+                }
+                """.formatted(orderId);
+
+        mockMvc.perform(post("/api/v1/payments/cash")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(JSON)
+                        .content(cashPayload))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("BUSINESS_RULE_VIOLATION"))
+                .andExpect(jsonPath("$.detailCode").value("CASH_RECEIVED_LT_TOTAL"));
+    }
+
+    @Test
+    void testCashPayment_OrderAlreadyPaid_ThrowsBusinessRuleException() throws Exception {
+        String token = cooToken();
+        int branchId = createBranch(token, "BR" + SEQ.incrementAndGet());
+        BigDecimal totalAmount = new BigDecimal("50000.00");
+        int orderId = createOrder(token, branchId, totalAmount);
+
+        String cashPayload = """
+                {
+                    "orderId": %d,
+                    "cashReceived": 50000
+                }
+                """.formatted(orderId);
+
+        // Thanh toán lần 1 thành công
+        mockMvc.perform(post("/api/v1/payments/cash")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(JSON)
+                        .content(cashPayload))
+                .andExpect(status().isOk());
+
+        // Thanh toán lần 2 trên đơn đã PAID -> ORDER_FROZEN (BR-26)
+        mockMvc.perform(post("/api/v1/payments/cash")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(JSON)
+                        .content(cashPayload))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("ORDER_FROZEN"));
+    }
 }
