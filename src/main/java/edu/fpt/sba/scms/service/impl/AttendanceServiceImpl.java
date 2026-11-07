@@ -7,6 +7,7 @@ import edu.fpt.sba.scms.common.enums.UserStatus;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
 import edu.fpt.sba.scms.common.exception.InvalidPinException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
+import edu.fpt.sba.scms.domain.attendance.AttendanceCalculator;
 import edu.fpt.sba.scms.dto.request.CardAttendanceRequest;
 import edu.fpt.sba.scms.dto.request.PinAttendanceRequest;
 import edu.fpt.sba.scms.dto.response.AttendanceResultDto;
@@ -81,10 +82,10 @@ public class AttendanceServiceImpl implements AttendanceService {
                 .orElseThrow(() -> new BusinessRuleException(BusinessErrorCode.ATTENDANCE_NO_OPEN));
 
         Instant now = Instant.now();
-        long workedMinutes = Math.max(0, Duration.between(attendance.getCheckInTime(), now).toMinutes());
+        long workedMinutes = AttendanceCalculator.calculateWorkedMinutes(attendance.getCheckInTime(), now);
 
-        // BR-07: Khoảng cách tối thiểu giữa lần Check-in và Check-out phải >= 15 phút
-        if (workedMinutes < 15) {
+        // BR-07: Khoảng cách tối thiểu giữa lần Check-in và Check-out phải >= 15 phút (kiểm tra qua AttendanceCalculator)
+        if (!AttendanceCalculator.isMinIntervalSatisfied(workedMinutes)) {
             throw new BusinessRuleException(BusinessErrorCode.ATTENDANCE_MIN_INTERVAL,
                     "Khoảng cách chấm công tối thiểu giữa lần check-in và check-out phải từ 15 phút trở lên (BR-07).");
         }

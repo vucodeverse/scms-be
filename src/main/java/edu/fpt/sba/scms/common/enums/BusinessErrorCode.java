@@ -30,7 +30,13 @@ public enum BusinessErrorCode {
     SELF_ACTION_FORBIDDEN("Không được tự thực hiện thao tác này trên tài khoản của chính mình."),
     VOUCHER_IN_USE("Voucher đã được sử dụng, không thể sửa hoặc xoá."),
     DEFAULT_SIZE_IN_USE("Size đang là size mặc định của sản phẩm."),
-    EMPTY_INVENTORY("Chi nhánh chưa có dữ liệu tồn kho để thực hiện kiểm kê.");
+    EMPTY_INVENTORY("Chi nhánh chưa có dữ liệu tồn kho để thực hiện kiểm kê."),
+    SCHEDULE_CONFLICT("Nhân viên bị trùng lịch ca làm việc."),
+    INVALID_MANAGER_PIN("Mã PIN của Quản lý chi nhánh không chính xác."),
+    MANAGER_PIN_REQUIRED("Thao tác yêu cầu mã PIN phê duyệt của Quản lý chi nhánh."),
+    SHIFT_CLOSED("Ca làm việc đã đóng."),
+    REFUND_NOT_ALLOWED("Đơn hàng không đủ điều kiện hoàn tiền."),
+    PAYROLL_LOCKED("Bảng lương đã chốt/duyệt, không thể chỉnh sửa.");
 
     private final String message;
 
