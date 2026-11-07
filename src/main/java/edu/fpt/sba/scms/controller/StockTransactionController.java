@@ -1,6 +1,10 @@
 package edu.fpt.sba.scms.controller;
 
+import edu.fpt.sba.scms.dto.request.CreateDisposalSlipRequest;
+import edu.fpt.sba.scms.dto.request.CreateIssueSlipRequest;
 import edu.fpt.sba.scms.dto.request.CreateReceiveSlipRequest;
+import edu.fpt.sba.scms.dto.response.StockDisposalSlipResponse;
+import edu.fpt.sba.scms.dto.response.StockIssueSlipResponse;
 import edu.fpt.sba.scms.dto.response.StockReceiveSlipResponse;
 import edu.fpt.sba.scms.service.StockTransactionService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -20,12 +24,12 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Controller phục vụ các giao dịch kho nguyên vật liệu (UC28).
+ * Controller phục vụ các giao dịch kho nguyên vật liệu (UC28, UC29, UC30).
  */
 @RestController
 @RequestMapping("/api/v1/stock-transactions")
 @RequiredArgsConstructor
-@Tag(name = "09. Inventory", description = "Quản lý giao dịch kho nguyên vật liệu (UC28)")
+@Tag(name = "09. Inventory", description = "Quản lý giao dịch kho nguyên vật liệu (UC28, UC29, UC30)")
 @SecurityRequirement(name = "bearerAuth")
 public class StockTransactionController {
 
@@ -41,5 +45,29 @@ public class StockTransactionController {
     @PreAuthorize("hasAnyAuthority('BRANCH_MANAGER', 'COO')")
     public StockReceiveSlipResponse receiveStock(@Valid @RequestBody CreateReceiveSlipRequest request) {
         return stockTransactionService.receiveStock(request);
+    }
+
+    @Operation(summary = "Xuất kho nguyên vật liệu cho quầy Bar (UC29)",
+            description = "Tạo phiếu xuất kho quầy bar, kiểm tra số tồn khả dụng bằng Pessimistic Lock, trừ tồn kho và tự động bật cờ cảnh báo thiếu hàng.")
+    @ApiResponse(responseCode = "201", description = "Xuất kho cho quầy Bar thành công",
+            content = @Content(mediaType = "application/json",
+                    schema = @Schema(implementation = StockIssueSlipResponse.class)))
+    @PostMapping("/issue")
+    @ResponseStatus(HttpStatus.CREATED)
+    @PreAuthorize("hasAnyAuthority('BRANCH_MANAGER', 'COO')")
+    public StockIssueSlipResponse issueStock(@Valid @RequestBody CreateIssueSlipRequest request) {
+        return stockTransactionService.issueStockToBar(request);
+    }
+
+    @Operation(summary = "Hủy nguyên vật liệu hỏng / hết hạn (UC30)",
+            description = "Lập phiếu hủy kho cho nguyên vật liệu hỏng, rách bao bì, quá hạn sử dụng, trừ tồn kho và tính tổng thiệt hại tài chính.")
+    @ApiResponse(responseCode = "201", description = "Lập phiếu hủy nguyên vật liệu thành công",
+            content = @Content(mediaType = "application/json",
+                    schema = @Schema(implementation = StockDisposalSlipResponse.class)))
+    @PostMapping("/dispose")
+    @ResponseStatus(HttpStatus.CREATED)
+    @PreAuthorize("hasAnyAuthority('BRANCH_MANAGER', 'COO')")
+    public StockDisposalSlipResponse disposeStock(@Valid @RequestBody CreateDisposalSlipRequest request) {
+        return stockTransactionService.disposeStock(request);
     }
 }

@@ -32,6 +32,8 @@ public enum ErrorCode {
 
     // ---- 404 ----
     RESOURCE_NOT_FOUND("Không tìm thấy dữ liệu.", HttpStatus.NOT_FOUND),
+    INGREDIENT_NOT_FOUND("Không tìm thấy nguyên vật liệu.", HttpStatus.NOT_FOUND),
+    INVENTORY_NOT_FOUND("Không tìm thấy dữ liệu tồn kho của nguyên liệu.", HttpStatus.NOT_FOUND),
 
     // ---- 409 ----
     RESOURCE_CONFLICT("Dữ liệu đã tồn tại.", HttpStatus.CONFLICT),
@@ -46,6 +48,7 @@ public enum ErrorCode {
 
     // ---- 422 ----
     BUSINESS_RULE_VIOLATION("Vi phạm quy tắc nghiệp vụ.", HttpStatus.UNPROCESSABLE_CONTENT),
+    INSUFFICIENT_STOCK("Tồn kho hiện tại không đủ để xuất.", HttpStatus.UNPROCESSABLE_CONTENT),
 
     // ---- 429 ----
     TOO_MANY_REQUESTS("Bạn thao tác quá nhanh, vui lòng thử lại sau.", HttpStatus.TOO_MANY_REQUESTS),
