@@ -8,6 +8,7 @@ import edu.fpt.sba.scms.dto.request.PingTestRequest;
 import edu.fpt.sba.scms.dto.request.UpdatePaymentConfigRequest;
 import edu.fpt.sba.scms.dto.response.PaymentConfigResponse;
 import edu.fpt.sba.scms.dto.response.PingTestResponse;
+import edu.fpt.sba.scms.mapper.PaymentConfigMapper;
 import edu.fpt.sba.scms.model.PaymentConfig;
 import edu.fpt.sba.scms.repository.PaymentConfigRepository;
 import edu.fpt.sba.scms.security.principal.UserPrincipal;
@@ -27,12 +28,13 @@ public class PaymentConfigServiceImpl implements PaymentConfigService {
 
     private final PaymentConfigRepository paymentConfigRepository;
     private final AuditLogService auditLogService;
+    private final PaymentConfigMapper paymentConfigMapper;
 
     @Override
     @Transactional
     public PaymentConfigResponse getConfig() {
         PaymentConfig config = getOrCreateDefault();
-        return toDto(config);
+        return paymentConfigMapper.toDto(config, maskToken(config.getApiToken()));
     }
 
     @Override
@@ -63,7 +65,7 @@ public class PaymentConfigServiceImpl implements PaymentConfigService {
                 principal != null ? principal.username() : "system",
                 saved.getBankName(), saved.getAccountNumber(), saved.getPaymentPrefix());
 
-        return toDto(saved);
+        return paymentConfigMapper.toDto(saved, maskToken(saved.getApiToken()));
     }
 
     @Override
@@ -116,20 +118,6 @@ public class PaymentConfigServiceImpl implements PaymentConfigService {
                     .build();
             return paymentConfigRepository.save(defaultConfig);
         });
-    }
-
-    private PaymentConfigResponse toDto(PaymentConfig config) {
-        return new PaymentConfigResponse(
-                config.getId(),
-                config.getBankName(),
-                config.getAccountNumber(),
-                config.getAccountHolder(),
-                config.getPaymentPrefix(),
-                maskToken(config.getApiToken()),
-                config.getWebhookUrl(),
-                config.isActive(),
-                config.getUpdatedAt()
-        );
     }
 
     private String maskToken(String token) {

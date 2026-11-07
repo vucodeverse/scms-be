@@ -19,6 +19,10 @@ import edu.fpt.sba.scms.dto.response.CashPaymentResponse;
 import edu.fpt.sba.scms.dto.response.OrderResponse;
 import edu.fpt.sba.scms.dto.response.PaymentStatusResponse;
 import edu.fpt.sba.scms.dto.response.VietQrResponse;
+import edu.fpt.sba.scms.integration.printer.PrinterPort;
+import edu.fpt.sba.scms.integration.sepay.SepayPort;
+import edu.fpt.sba.scms.integration.vietqr.VietQrPort;
+import edu.fpt.sba.scms.mapper.PaymentMapper;
 import edu.fpt.sba.scms.model.Order;
 import edu.fpt.sba.scms.model.Payment;
 import edu.fpt.sba.scms.model.PaymentConfig;
@@ -37,13 +41,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.math.BigDecimal;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Optional;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 @Slf4j
 @Service
@@ -55,6 +55,10 @@ public class PaymentServiceImpl implements PaymentService {
     private final PaymentWebhookLogRepository paymentWebhookLogRepository;
     private final PaymentConfigService paymentConfigService;
     private final AuditLogService auditLogService;
+    private final PaymentMapper paymentMapper;
+    private final VietQrPort vietQrPort;
+    private final SepayPort sepayPort;
+    private final PrinterPort printerPort;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -73,7 +77,7 @@ public class PaymentServiceImpl implements PaymentService {
         log.info("Tạo đơn hàng mới ID={} tại chi nhánh {}, tổng thanh toán={}",
                 saved.getId(), saved.getBranchId(), saved.getFinalAmount());
 
-        return toOrderResponse(saved);
+        return paymentMapper.toOrderResponse(saved);
     }
 
     @Override
@@ -93,7 +97,8 @@ public class PaymentServiceImpl implements PaymentService {
         // AT1: Tiền khách đưa nhỏ hơn tổng tiền phải trả
         if (!OrderPricingCalculator.isSufficientCash(cashReceived, finalAmount)) {
             throw new BusinessRuleException(BusinessErrorCode.CASH_RECEIVED_LT_TOTAL,
-                    String.format("Tiền khách đưa (%s đ) nhỏ hơn tổng tiền thanh toán (%s đ).", cashReceived, finalAmount));
+                    String.format("Tiền khách đưa (%s đ) nhỏ hơn tổng tiền thanh toán (%s đ).", cashReceived,
+                            finalAmount));
         }
 
         BigDecimal changeReturned = OrderPricingCalculator.calculateChange(cashReceived, finalAmount);
@@ -117,22 +122,29 @@ public class PaymentServiceImpl implements PaymentService {
         // BR-51: Ghi log kiểm toán
         auditLogService.log(AuditAction.PAYMENT_SUCCESS, "payment", savedPayment.getId(), null,
                 "CASH: " + finalAmount + " VND (Received: " + cashReceived + ", Change: " + changeReturned + ")");
-        auditLogService.log(AuditAction.ORDER_PAID, "order", order.getId(), OrderStatus.PENDING.name(), OrderStatus.PAID.name());
+        auditLogService.log(AuditAction.ORDER_PAID, "order", order.getId(), OrderStatus.PENDING.name(),
+                OrderStatus.PAID.name());
+
+        // In hóa đơn qua cổng máy in nhiệt ESC/POS (BR-31)
+        printerPort.printReceipt(new PrinterPort.ReceiptCommand(
+                order.getId(),
+                order.getReceiptNo(),
+                "Chi nhánh #" + order.getBranchId(),
+                principal != null ? principal.username() : "Thu ngân",
+                finalAmount,
+                now
+        ));
 
         log.info("Thanh toán tiền mặt thành công cho đơn hàng ID={}: Phải trả={}, Khách đưa={}, Thối lại={}",
                 order.getId(), finalAmount, cashReceived, changeReturned);
 
-        return new CashPaymentResponse(
-                order.getId(),
-                order.getStatus(),
-                savedPayment.getStatus(),
-                savedPayment.getMethod(),
-                finalAmount,
+        return paymentMapper.toCashPaymentResponse(
+                order,
+                savedPayment,
                 cashReceived,
                 changeReturned,
                 now,
-                "Thanh toán tiền mặt thành công. Tiền thối lại: " + changeReturned.toPlainString() + " đ."
-        );
+                "Thanh toán tiền mặt thành công. Tiền thối lại: " + changeReturned.toPlainString() + " đ.");
     }
 
     @Override
@@ -150,22 +162,16 @@ public class PaymentServiceImpl implements PaymentService {
         // 1. Tạo mã tham chiếu nhận diện chuyển khoản (BR-24, BR-28): CAFE{orderId}
         String prefix = StringUtils.hasText(config.getPaymentPrefix()) ? config.getPaymentPrefix() : "CAFE";
         String referenceCode = prefix + order.getId();
-
-        // 2. Tạo đường link VietQR động
-        String encodedHolder = URLEncoder.encode(config.getAccountHolder(), StandardCharsets.UTF_8);
-        String bank = config.getBankName().trim();
-        String accountNo = config.getAccountNumber().trim();
         BigDecimal amount = order.getFinalAmount();
 
-        // URL chuẩn hiển thị QR dạng ảnh (quick link VietQR)
-        String qrImageUrl = String.format(
-                "https://img.vietqr.io/image/%s-%s-compact2.png?amount=%s&addInfo=%s&accountName=%s",
-                bank, accountNo, amount.toPlainString(), referenceCode, encodedHolder
-        );
-
-        // Payload định dạng chuẩn
-        String qrPayload = String.format("vietqr://transfer?bank=%s&acc=%s&amount=%s&memo=%s",
-                bank, accountNo, amount.toPlainString(), referenceCode);
+        // 2. Tạo link VietQR động qua cổng tích hợp VietQrPort
+        VietQrPort.VietQrData qrData = vietQrPort.generateQr(new VietQrPort.VietQrCommand(
+                config.getBankName(),
+                config.getAccountNumber(),
+                config.getAccountHolder(),
+                amount,
+                referenceCode
+        ));
 
         Instant expiresAt = Instant.now().plus(Duration.ofMinutes(15));
 
@@ -179,29 +185,26 @@ public class PaymentServiceImpl implements PaymentService {
         payment.setAmount(amount);
         payment.setStatus(PaymentStatus.PENDING);
         payment.setReferenceCode(referenceCode);
-        payment.setQrCode(qrImageUrl);
+        payment.setQrCode(qrData.qrImageUrl());
         payment.setQrExpiresAt(expiresAt);
 
-        paymentRepository.save(payment);
-        log.info("Tạo mã VietQR cho đơn hàng ID={}, mã tham chiếu={}, số tiền={}", order.getId(), referenceCode, amount);
+        Payment savedPayment = paymentRepository.save(payment);
+        log.info("Tạo mã VietQR cho đơn hàng ID={}, mã tham chiếu={}, số tiền={}", order.getId(), referenceCode,
+                amount);
 
-        return new VietQrResponse(
-                order.getId(),
-                referenceCode,
-                amount,
+        return paymentMapper.toVietQrResponse(
+                order,
+                savedPayment,
                 config.getBankName(),
                 config.getAccountNumber(),
                 config.getAccountHolder(),
-                qrImageUrl,
-                qrPayload,
-                expiresAt,
-                PaymentStatus.PENDING
-        );
+                qrData.qrPayload());
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public PaymentStatusResponse processSepayWebhook(SepayWebhookRequest payload, String authHeader, String rawPayload) {
+    public PaymentStatusResponse processSepayWebhook(SepayWebhookRequest payload, String authHeader,
+            String rawPayload) {
         log.info("Nhận Webhook từ SePay: transId={}, gateway={}, amount={}, content={}",
                 payload.id(), payload.gateway(), payload.transferAmount(), payload.content());
 
@@ -209,43 +212,56 @@ public class PaymentServiceImpl implements PaymentService {
         String sepayRef = payload.id() != null ? payload.id().toString() : "UNKNOWN_" + Instant.now().toEpochMilli();
         BigDecimal amount = payload.transferAmount() != null ? payload.transferAmount() : BigDecimal.ZERO;
 
-        // BƯỚC 1: Xác thực Signature / Token từ SePay (BR-29)
-        boolean signatureValid = verifySignature(authHeader, config.getApiToken());
+        // BƯỚC 1: Xác thực Signature / Token từ SePay qua SepayPort (BR-29)
+        boolean signatureValid = sepayPort.verifySignature(authHeader, config.getApiToken());
         if (!signatureValid) {
             log.warn("Xác thực Webhook SePay thất bại: chữ ký hoặc Token không hợp lệ. header={}", authHeader);
             saveWebhookLog(null, sepayRef, amount, false, WebhookMatchResult.INVALID_SIG, rawPayload);
-            throw new UnauthorizedException(ErrorCode.AUTH_TOKEN_INVALID, "Chữ ký xác thực Webhook SePay không hợp lệ.");
+            throw new UnauthorizedException(ErrorCode.AUTH_TOKEN_INVALID,
+                    "Chữ ký xác thực Webhook SePay không hợp lệ.");
         }
 
         // BƯỚC 2: Kiểm tra chống xử lý trùng lặp (Anti-duplicate - BR-26, BR-29, AT2)
         if (paymentWebhookLogRepository.existsBySepayRef(sepayRef)) {
             log.warn("Bỏ qua Webhook trùng lặp: transId={}", sepayRef);
             saveWebhookLog(null, sepayRef, amount, true, WebhookMatchResult.DUPLICATE, rawPayload);
-            return new PaymentStatusResponse(
-                    null, null, PaymentStatus.SUCCESS, PaymentMethod.VIETQR,
-                    amount, amount, null, sepayRef, Instant.now(),
-                    "Giao dịch SePay đã được xử lý trước đó (trùng lặp)."
-            );
+            Payment duplicatePayment = Payment.builder()
+                    .status(PaymentStatus.SUCCESS)
+                    .method(PaymentMethod.VIETQR)
+                    .amount(amount)
+                    .receivedAmount(amount)
+                    .sepayRef(sepayRef)
+                    .build();
+            return paymentMapper.toPaymentStatusResponse(
+                    null,
+                    duplicatePayment,
+                    "Giao dịch SePay đã được xử lý trước đó (trùng lặp).");
         }
 
-        // BƯỚC 3: Trích xuất mã tham chiếu đơn hàng (Order Reference) từ nội dung chuyển khoản (BR-28)
+        // BƯỚC 3: Trích xuất mã tham chiếu đơn hàng qua SepayPort (BR-28)
         String prefix = StringUtils.hasText(config.getPaymentPrefix()) ? config.getPaymentPrefix() : "CAFE";
         String narration = (payload.content() != null ? payload.content() : "") + " "
                 + (payload.description() != null ? payload.description() : "");
 
-        Integer orderId = extractOrderId(narration, prefix);
+        Integer orderId = sepayPort.extractOrderId(narration, prefix);
         if (orderId == null && payload.code() != null) {
-            orderId = extractOrderId(payload.code(), prefix);
+            orderId = sepayPort.extractOrderId(payload.code(), prefix);
         }
 
         if (orderId == null) {
             log.warn("Không tìm thấy mã tham chiếu '{}' trong nội dung chuyển khoản: '{}'", prefix, narration);
             saveWebhookLog(null, sepayRef, amount, true, WebhookMatchResult.NOT_FOUND, rawPayload);
-            return new PaymentStatusResponse(
-                    null, null, PaymentStatus.FAILED, PaymentMethod.VIETQR,
-                    amount, amount, null, sepayRef, null,
-                    "Không tìm thấy mã đơn hàng trong nội dung chuyển khoản."
-            );
+            Payment failedPayment = Payment.builder()
+                    .status(PaymentStatus.FAILED)
+                    .method(PaymentMethod.VIETQR)
+                    .amount(amount)
+                    .receivedAmount(amount)
+                    .sepayRef(sepayRef)
+                    .build();
+            return paymentMapper.toPaymentStatusResponse(
+                    null,
+                    failedPayment,
+                    "Không tìm thấy mã đơn hàng trong nội dung chuyển khoản.");
         }
 
         // BƯỚC 4: Tìm đơn hàng và Payment tương ứng
@@ -253,11 +269,18 @@ public class PaymentServiceImpl implements PaymentService {
         if (orderOpt.isEmpty()) {
             log.warn("Không tìm thấy đơn hàng ID={}", orderId);
             saveWebhookLog(null, sepayRef, amount, true, WebhookMatchResult.NOT_FOUND, rawPayload);
-            return new PaymentStatusResponse(
-                    orderId, null, PaymentStatus.FAILED, PaymentMethod.VIETQR,
-                    amount, amount, null, sepayRef, null,
-                    "Không tìm thấy đơn hàng ID " + orderId
-            );
+            Payment failedPayment = Payment.builder()
+                    .orderId(orderId)
+                    .status(PaymentStatus.FAILED)
+                    .method(PaymentMethod.VIETQR)
+                    .amount(amount)
+                    .receivedAmount(amount)
+                    .sepayRef(sepayRef)
+                    .build();
+            return paymentMapper.toPaymentStatusResponse(
+                    null,
+                    failedPayment,
+                    "Không tìm thấy đơn hàng ID " + orderId);
         }
 
         Order order = orderOpt.get();
@@ -289,20 +312,13 @@ public class PaymentServiceImpl implements PaymentService {
 
             log.info("Xác nhận thanh toán SePay thành công cho đơn hàng ID={}, số tiền={}", order.getId(), amount);
 
-            return new PaymentStatusResponse(
-                    order.getId(),
-                    order.getStatus(),
-                    savedPayment.getStatus(),
-                    savedPayment.getMethod(),
-                    savedPayment.getAmount(),
-                    amount,
-                    savedPayment.getReferenceCode(),
-                    sepayRef,
-                    order.getPaidAt(),
-                    "Thanh toán SePay thành công. Đơn hàng chuyển sang trạng thái PAID."
-            );
+            return paymentMapper.toPaymentStatusResponse(
+                    order,
+                    savedPayment,
+                    "Thanh toán SePay thành công. Đơn hàng chuyển sang trạng thái PAID.");
         } else {
-            // Lệch tiền (thiếu tiền) -> Đánh dấu MISMATCH, giữ nguyên trạng thái PENDING của Order (AT4)
+            // Lệch tiền (thiếu tiền) -> Đánh dấu MISMATCH, giữ nguyên trạng thái PENDING
+            // của Order (AT4)
             payment.setStatus(PaymentStatus.MISMATCH);
             payment.setReceivedAmount(amount);
             payment.setSepayRef(sepayRef);
@@ -312,18 +328,10 @@ public class PaymentServiceImpl implements PaymentService {
             log.warn("Thanh toán không khớp số tiền cho đơn hàng ID={}: Nhận {}, cần {}",
                     order.getId(), amount, order.getFinalAmount());
 
-            return new PaymentStatusResponse(
-                    order.getId(),
-                    order.getStatus(),
-                    PaymentStatus.MISMATCH,
-                    savedPayment.getMethod(),
-                    savedPayment.getAmount(),
-                    amount,
-                    savedPayment.getReferenceCode(),
-                    sepayRef,
-                    null,
-                    "Số tiền thanh toán không khớp: nhận " + amount + ", yêu cầu " + order.getFinalAmount()
-            );
+            return paymentMapper.toPaymentStatusResponse(
+                    order,
+                    savedPayment,
+                    "Số tiền thanh toán không khớp: nhận " + amount + ", yêu cầu " + order.getFinalAmount());
         }
     }
 
@@ -337,64 +345,25 @@ public class PaymentServiceImpl implements PaymentService {
 
         if (paymentOpt.isPresent()) {
             Payment p = paymentOpt.get();
-            return new PaymentStatusResponse(
-                    order.getId(),
-                    order.getStatus(),
-                    p.getStatus(),
-                    p.getMethod(),
-                    p.getAmount(),
-                    p.getReceivedAmount(),
-                    p.getReferenceCode(),
-                    p.getSepayRef(),
-                    order.getPaidAt(),
-                    order.isPaid() ? "Đơn hàng đã thanh toán thành công." : "Đang chờ thanh toán."
-            );
+            return paymentMapper.toPaymentStatusResponse(
+                    order,
+                    p,
+                    order.isPaid() ? "Đơn hàng đã thanh toán thành công." : "Đang chờ thanh toán.");
         }
 
-        return new PaymentStatusResponse(
-                order.getId(),
-                order.getStatus(),
-                PaymentStatus.PENDING,
-                null,
-                order.getFinalAmount(),
-                null,
-                null,
-                null,
-                order.getPaidAt(),
-                "Chưa khởi tạo giao dịch thanh toán."
-        );
-    }
-
-    private boolean verifySignature(String authHeader, String configuredToken) {
-        if (!StringUtils.hasText(configuredToken)) {
-            // Chưa cấu hình token bí mật -> chấp nhận trong môi trường test/sandbox
-            return true;
-        }
-        if (!StringUtils.hasText(authHeader)) {
-            return false;
-        }
-        // Hỗ trợ cả định dạng "Apikey {token}", "Bearer {token}" hoặc "{token}"
-        String cleaned = authHeader.replace("Apikey ", "").replace("Bearer ", "").trim();
-        return configuredToken.trim().equals(cleaned);
-    }
-
-    private Integer extractOrderId(String text, String prefix) {
-        if (!StringUtils.hasText(text)) {
-            return null;
-        }
-        Pattern pattern = Pattern.compile(Pattern.quote(prefix) + "\\s*([0-9]+)", Pattern.CASE_INSENSITIVE);
-        Matcher matcher = pattern.matcher(text);
-        if (matcher.find()) {
-            try {
-                return Integer.parseInt(matcher.group(1));
-            } catch (NumberFormatException ignored) {
-            }
-        }
-        return null;
+        Payment pendingPayment = Payment.builder()
+                .orderId(order.getId())
+                .status(PaymentStatus.PENDING)
+                .amount(order.getFinalAmount())
+                .build();
+        return paymentMapper.toPaymentStatusResponse(
+                order,
+                pendingPayment,
+                "Chưa khởi tạo giao dịch thanh toán.");
     }
 
     private void saveWebhookLog(Integer paymentId, String sepayRef, BigDecimal amount,
-                                boolean signatureValid, WebhookMatchResult matchResult, String rawPayload) {
+            boolean signatureValid, WebhookMatchResult matchResult, String rawPayload) {
         try {
             PaymentWebhookLog logEntry = PaymentWebhookLog.builder()
                     .paymentId(paymentId)
@@ -402,26 +371,13 @@ public class PaymentServiceImpl implements PaymentService {
                     .amount(amount)
                     .signatureValid(signatureValid)
                     .matchResult(matchResult)
-                    .rawPayload(rawPayload != null && rawPayload.length() > 4000 ? rawPayload.substring(0, 4000) : rawPayload)
+                    .rawPayload(rawPayload != null && rawPayload.length() > 4000 ? rawPayload.substring(0, 4000)
+                            : rawPayload)
                     .receivedAt(Instant.now())
                     .build();
             paymentWebhookLogRepository.save(logEntry);
         } catch (Exception e) {
             log.error("Lỗi khi lưu payment_webhook_log cho transId {}: {}", sepayRef, e.getMessage());
         }
-    }
-
-    private OrderResponse toOrderResponse(Order order) {
-        return new OrderResponse(
-                order.getId(),
-                order.getBranchId(),
-                order.getStatus(),
-                order.getTotalAmount(),
-                order.getDiscountAmount(),
-                order.getFinalAmount(),
-                order.getNote(),
-                order.getCreatedAt(),
-                order.getPaidAt()
-        );
     }
 }
