@@ -40,4 +40,11 @@ public interface InventoryRepository extends JpaRepository<Inventory, Long>, Jpa
     }
 
     boolean existsByBranch_IdAndIngredient_Id(Integer branchId, Long ingredientId);
+
+    @Query("SELECT i FROM Inventory i JOIN FETCH i.ingredient ing WHERE i.branch.id = :branchId AND ing.status = 'ACTIVE' ORDER BY ing.name ASC")
+    List<Inventory> findAllByBranchIdWithActiveIngredient(@Param("branchId") Integer branchId);
+
+    default List<Inventory> findAllByBranchIdWithActiveIngredient(Long branchId) {
+        return findAllByBranchIdWithActiveIngredient(branchId != null ? branchId.intValue() : null);
+    }
 }
