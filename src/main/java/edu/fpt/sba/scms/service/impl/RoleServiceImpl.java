@@ -10,6 +10,7 @@ import edu.fpt.sba.scms.dto.request.UpdateRolePermissionsRequest;
 import edu.fpt.sba.scms.dto.response.RolePermissionDto;
 import edu.fpt.sba.scms.dto.response.RolePermissionsResponse;
 import edu.fpt.sba.scms.dto.response.UserDto;
+import edu.fpt.sba.scms.mapper.RoleMapper;
 import edu.fpt.sba.scms.model.Role;
 import edu.fpt.sba.scms.repository.RoleRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
@@ -36,6 +37,7 @@ public class RoleServiceImpl implements RoleService {
     private final UserRepository userRepository;
     private final UserService userService;
     private final AuditLogService auditLogService;
+    private final RoleMapper roleMapper;
 
     /** Lưu trữ quyền tùy biến theo từng role code (mặc định lấy từ PermissionCatalog). */
     private final Map<String, List<String>> rolePermissionsMap = new ConcurrentHashMap<>();
@@ -47,14 +49,7 @@ public class RoleServiceImpl implements RoleService {
         return roles.stream().map(role -> {
             long userCount = userRepository.countByRoleCodesAndStatus(List.of(role.getCode()), UserStatus.ACTIVE);
             List<String> perms = getPermissionsForRole(role.getCode());
-            return new RolePermissionDto(
-                    role.getId(),
-                    role.getCode(),
-                    role.getName(),
-                    role.getDescription(),
-                    userCount,
-                    perms
-            );
+            return roleMapper.toPermissionDto(role, userCount, perms);
         }).toList();
     }
 
@@ -67,14 +62,7 @@ public class RoleServiceImpl implements RoleService {
         List<String> assigned = getPermissionsForRole(role.getCode());
         List<String> allAvailable = PermissionCatalog.allPermissions();
 
-        return new RolePermissionsResponse(
-                role.getId(),
-                role.getCode(),
-                role.getName(),
-                role.getDescription(),
-                assigned,
-                allAvailable
-        );
+        return roleMapper.toPermissionsResponse(role, assigned, allAvailable);
     }
 
     @Override
@@ -93,11 +81,8 @@ public class RoleServiceImpl implements RoleService {
         auditLogService.log(AuditAction.SETTINGS_UPDATE, "role_permission", role.getId(), before, newPermissions);
         log.info("COO '{}' cập nhật quyền hạn cho vai trò '{}' (ID={}): {}", principal.username(), role.getCode(), role.getId(), newPermissions);
 
-        return new RolePermissionsResponse(
-                role.getId(),
-                role.getCode(),
-                role.getName(),
-                role.getDescription(),
+        return roleMapper.toPermissionsResponse(
+                role,
                 newPermissions,
                 PermissionCatalog.allPermissions()
         );
