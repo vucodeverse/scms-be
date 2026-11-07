@@ -1,6 +1,7 @@
 package edu.fpt.sba.scms.model;
 
 import edu.fpt.sba.scms.common.enums.OrderStatus;
+import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -10,6 +11,8 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
+import jakarta.persistence.OneToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import lombok.AllArgsConstructor;
@@ -20,6 +23,8 @@ import lombok.Setter;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 
 import static jakarta.persistence.GenerationType.IDENTITY;
 
@@ -47,6 +52,9 @@ public class Order {
     @JoinColumn(name = "branch_id", insertable = false, updatable = false)
     private Branch branch;
 
+    @Column(name = "shift_id")
+    private Integer shiftId;
+
     @Column(name = "cashier_id")
     private Integer cashierId;
 
@@ -73,6 +81,12 @@ public class Order {
     @Column(name = "receipt_no", length = 30)
     private String receiptNo;
 
+    @Column(name = "receipt_printed_at")
+    private Instant receiptPrintedAt;
+
+    @Column(name = "cancel_reason", length = 500)
+    private String cancelReason;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -81,6 +95,10 @@ public class Order {
 
     @Column(name = "cancelled_at")
     private Instant cancelledAt;
+
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    private List<OrderLine> lines = new ArrayList<>();
 
     @PrePersist
     void prePersist() {
@@ -98,5 +116,12 @@ public class Order {
     public boolean isPaid() {
         return status == OrderStatus.PAID;
     }
-}
 
+    public boolean isPending() {
+        return status == OrderStatus.PENDING;
+    }
+
+    public boolean isCancelled() {
+        return status == OrderStatus.CANCELLED;
+    }
+}

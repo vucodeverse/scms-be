@@ -11,6 +11,7 @@ import edu.fpt.sba.scms.common.enums.WebhookMatchResult;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
 import edu.fpt.sba.scms.common.exception.UnauthorizedException;
+import edu.fpt.sba.scms.domain.order.OrderPricingCalculator;
 import edu.fpt.sba.scms.dto.request.CreateOrderRequest;
 import edu.fpt.sba.scms.dto.request.ProcessCashPaymentRequest;
 import edu.fpt.sba.scms.dto.request.SepayWebhookRequest;
@@ -90,12 +91,12 @@ public class PaymentServiceImpl implements PaymentService {
         BigDecimal cashReceived = request.cashReceived();
 
         // AT1: Tiền khách đưa nhỏ hơn tổng tiền phải trả
-        if (cashReceived.compareTo(finalAmount) < 0) {
+        if (!OrderPricingCalculator.isSufficientCash(cashReceived, finalAmount)) {
             throw new BusinessRuleException(BusinessErrorCode.CASH_RECEIVED_LT_TOTAL,
                     String.format("Tiền khách đưa (%s đ) nhỏ hơn tổng tiền thanh toán (%s đ).", cashReceived, finalAmount));
         }
 
-        BigDecimal changeReturned = cashReceived.subtract(finalAmount);
+        BigDecimal changeReturned = OrderPricingCalculator.calculateChange(cashReceived, finalAmount);
         Instant now = Instant.now();
 
         // Cập nhật trạng thái đơn hàng sang PAID

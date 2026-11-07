@@ -5,12 +5,16 @@ import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
 
 import java.math.BigDecimal;
+import java.util.List;
 
-@Schema(name = "CreateOrderRequest", description = "Tạo đơn hàng tại quầy POS")
+@Schema(name = "CreateOrderRequest", description = "Tạo đơn hàng tại quầy POS (UC16)")
 public record CreateOrderRequest(
         @Schema(description = "ID chi nhánh bán", example = "1")
         @NotNull(message = "Chi nhánh không được để trống")
         Integer branchId,
+
+        @Schema(description = "ID ca làm việc hiện tại", example = "1")
+        Integer shiftId,
 
         @Schema(description = "Tổng tiền trước giảm", example = "60000")
         @NotNull(message = "Tổng tiền không được để trống")
@@ -26,7 +30,17 @@ public record CreateOrderRequest(
         BigDecimal finalAmount,
 
         @Schema(description = "Ghi chú đơn hàng", example = "Ít đường, nhiều đá")
-        String note
-) {
-}
+        String note,
 
+        @Schema(description = "Danh sách dòng món trong đơn hàng (BR-25)")
+        List<CreateOrderLineRequest> lines
+) {
+    public CreateOrderRequest {
+        if (discountAmount == null) {
+            discountAmount = BigDecimal.ZERO;
+        }
+        if (lines == null) {
+            lines = List.of();
+        }
+    }
+}
