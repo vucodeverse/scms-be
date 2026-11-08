@@ -1,16 +1,65 @@
 package edu.fpt.sba.scms.domain.shift;
 
+import edu.fpt.sba.scms.common.enums.CashTransactionType;
+
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * Thuật toán và công thức tính toán tiền mặt trong ca két POS (Pure Java - Domain).
  * Hiện thực các quy tắc nghiệp vụ BR-34, BR-38, BR-39.
- * Tuân thủ quy tắc kiến trúc: chỉ dùng JDK thuần, không phụ thuộc Spring/JPA/Database.
+ * Tuân thủ quy tắc kiến trúc: chỉ dùng JDK thuần và common/enums, không phụ thuộc Spring/JPA/Database.
  */
 public final class ShiftCashCalculator {
 
     private ShiftCashCalculator() {
         // Utility class
+    }
+
+    /**
+     * DTO thuần của domain đại diện cho một bản ghi dòng tiền két.
+     */
+    public record CashEntry(CashTransactionType type, BigDecimal amount) {
+    }
+
+    /**
+     * Kết quả tổng hợp các dòng tiền trong ca.
+     */
+    public record CashAggregation(
+            BigDecimal totalIn,
+            BigDecimal totalOut,
+            BigDecimal totalRefund
+    ) {
+        public static CashAggregation empty() {
+            return new CashAggregation(BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO);
+        }
+    }
+
+    /**
+     * Tổng hợp các khoản nạp, rút và hoàn tiền trong ca (Tell, Don't Ask).
+     */
+    public static CashAggregation aggregate(List<CashEntry> entries) {
+        if (entries == null || entries.isEmpty()) {
+            return CashAggregation.empty();
+        }
+        BigDecimal totalIn = BigDecimal.ZERO;
+        BigDecimal totalOut = BigDecimal.ZERO;
+        BigDecimal totalRefund = BigDecimal.ZERO;
+
+        for (CashEntry entry : entries) {
+            if (entry == null || entry.type() == null || entry.amount() == null) {
+                continue;
+            }
+            switch (entry.type()) {
+                case CASH_IN -> totalIn = totalIn.add(entry.amount());
+                case CASH_OUT -> totalOut = totalOut.add(entry.amount());
+                case REFUND_OUT -> totalRefund = totalRefund.add(entry.amount());
+                default -> {
+                    // Các loại khác (OPEN, CLOSE) không tính vào luân chuyển trong ca
+                }
+            }
+        }
+        return new CashAggregation(totalIn, totalOut, totalRefund);
     }
 
     /**
@@ -82,4 +131,3 @@ public final class ShiftCashCalculator {
         return opening.add(in).subtract(out).subtract(refund).add(revenue);
     }
 }
-

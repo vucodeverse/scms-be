@@ -1,10 +1,12 @@
 package edu.fpt.sba.scms.domain;
 
+import edu.fpt.sba.scms.common.enums.ShiftType;
 import edu.fpt.sba.scms.domain.shift.ShiftSchedulePolicy;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.time.LocalTime;
 import java.time.temporal.ChronoUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -46,5 +48,14 @@ class ShiftSchedulePolicyTest {
         assertFalse(ShiftSchedulePolicy.isValidShiftTime(start, start));
         assertFalse(ShiftSchedulePolicy.isValidShiftTime(null, end));
     }
-}
 
+    @Test
+    @DisplayName("inferShiftType: Suy luận loại ca dựa trên khung giờ địa phương")
+    void inferShiftType_infersCorrectType() {
+        assertEquals(ShiftType.NIGHT, ShiftSchedulePolicy.inferShiftType(LocalTime.of(3, 0)));
+        assertEquals(ShiftType.MORNING, ShiftSchedulePolicy.inferShiftType(LocalTime.of(7, 30)));
+        assertEquals(ShiftType.EVENING, ShiftSchedulePolicy.inferShiftType(LocalTime.of(15, 0)));
+        assertEquals(ShiftType.NIGHT, ShiftSchedulePolicy.inferShiftType(LocalTime.of(22, 30)));
+        assertEquals(ShiftType.MORNING, ShiftSchedulePolicy.inferShiftType(null));
+    }
+}

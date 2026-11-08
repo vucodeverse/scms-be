@@ -30,9 +30,10 @@ import edu.fpt.sba.scms.repository.CashTransactionRepository;
 import edu.fpt.sba.scms.repository.ShiftAssignmentRepository;
 import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
-import edu.fpt.sba.scms.service.support.PinHasher;
+import edu.fpt.sba.scms.security.BranchContext;
 import edu.fpt.sba.scms.security.principal.UserPrincipal;
 import edu.fpt.sba.scms.service.ShiftService;
+import edu.fpt.sba.scms.service.support.PinHasher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -43,13 +44,20 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ShiftServiceImpl implements ShiftService {
+
+    private static final ZoneId VN_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
     private final ShiftRepository shiftRepository;
     private final CashTransactionRepository cashTransactionRepository;
@@ -62,51 +70,16 @@ public class ShiftServiceImpl implements ShiftService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ShiftResponse openShift(OpenShiftRequest request, UserPrincipal principal) {
-        Integer branchId = request.branchId();
-
-        // BR-36: Mỗi chi nhánh tại một thời điểm chỉ được phép có duy nhất 1 Ca mở
-        if (shiftRepository.existsByBranchIdAndStatus(branchId, ShiftStatus.OPEN)) {
-            throw new BusinessRuleException(BusinessErrorCode.SHIFT_ALREADY_OPEN,
-                    "Chi nhánh hiện đang có một ca làm việc đang mở. Vui lòng đóng ca trước khi mở ca mới.");
-        }
-
-        Shift shift;
-        if (request.scheduledShiftId() != null) {
-            shift = shiftRepository.findById(request.scheduledShiftId())
-                    .orElseThrow(() -> new NotFoundException("ca làm việc"));
-            shift.setStatus(ShiftStatus.OPEN);
-        } else {
-            Instant now = Instant.now();
-            shift = Shift.builder()
-                    .branchId(branchId)
-                    .shiftDate(LocalDate.now())
-                    .shiftType(ShiftType.MORNING)
-                    .plannedStart(now)
-                    .plannedEnd(now.plus(Duration.ofHours(8)))
-                    .status(ShiftStatus.OPEN)
-                    .build();
-        }
+        Integer branchId = BranchContext.resolveBranchScope(request.branchId());
+        validateNoOpenShiftInBranch(branchId);
 
         Instant now = Instant.now();
-        shift.setOpenedBy(principal != null ? principal.userId() : null);
-        shift.setOpenedAt(now);
-        shift.setOpeningCash(request.openingCash());
-        shift.setExpectedCash(request.openingCash());
-        shift.setCashRevenue(BigDecimal.ZERO);
-        shift.setTransferRevenue(BigDecimal.ZERO);
+        Shift shift = resolveShift(request, branchId, now);
+        Integer actorId = resolveActorId(principal);
+        populateOpeningFields(shift, request.openingCash(), actorId, now);
 
         Shift savedShift = shiftRepository.save(shift);
-
-        // Ghi nhận giao dịch mở ca vào két
-        CashTransaction openTx = CashTransaction.builder()
-                .shiftId(savedShift.getId())
-                .type(CashTransactionType.OPEN)
-                .amount(request.openingCash())
-                .reason(StringUtils.hasText(request.note()) ? request.note() : "Mở ca & khai báo số dư đầu két")
-                .createdBy(principal != null ? principal.userId() : 1)
-                .isSelfInitiated(false)
-                .build();
-        cashTransactionRepository.save(openTx);
+        recordOpeningCashTransaction(savedShift.getId(), request.openingCash(), request.note(), actorId);
 
         auditLogService.log(AuditAction.SHIFT_OPEN, "shift", savedShift.getId(), null,
                 "Mở ca ID=" + savedShift.getId() + ", tiền đầu ca=" + request.openingCash());
@@ -119,24 +92,23 @@ public class ShiftServiceImpl implements ShiftService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public CashTransactionResponse cashIn(Integer shiftId, CashAdjustmentRequest request, UserPrincipal principal) {
-        Shift shift = getOpenShiftOrThrow(shiftId);
+        Shift shift = getOpenShiftForUpdateOrThrow(shiftId);
 
-        // BR-32 & BR-37: Xác thực mã PIN của Quản lý chi nhánh
         User manager = verifyManagerPin(shift.getBranchId(), request.managerPin());
         boolean isSelf = principal != null && principal.userId().equals(manager.getId());
+        Integer actorId = resolveActorId(principal);
 
         CashTransaction tx = CashTransaction.builder()
                 .shiftId(shift.getId())
                 .type(CashTransactionType.CASH_IN)
                 .amount(request.amount())
                 .reason(request.reason())
-                .createdBy(principal != null ? principal.userId() : 1)
+                .createdBy(actorId)
                 .approvedBy(manager.getId())
                 .isSelfInitiated(isSelf)
                 .build();
         CashTransaction savedTx = cashTransactionRepository.save(tx);
 
-        // BR-39: Cập nhật expected_cash trong két bằng Domain Calculator
         shift.setExpectedCash(ShiftCashCalculator.addCash(shift.getExpectedCash(), request.amount()));
         shiftRepository.save(shift);
 
@@ -151,13 +123,12 @@ public class ShiftServiceImpl implements ShiftService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public CashTransactionResponse cashOut(Integer shiftId, CashAdjustmentRequest request, UserPrincipal principal) {
-        Shift shift = getOpenShiftOrThrow(shiftId);
+        Shift shift = getOpenShiftForUpdateOrThrow(shiftId);
 
-        // BR-32 & BR-37: Xác thực mã PIN của Quản lý chi nhánh
         User manager = verifyManagerPin(shift.getBranchId(), request.managerPin());
         boolean isSelf = principal != null && principal.userId().equals(manager.getId());
+        Integer actorId = resolveActorId(principal);
 
-        // Kiểm tra két có đủ tiền để rút không qua Domain Calculator (BR-34)
         if (!ShiftCashCalculator.isSufficientCash(shift.getExpectedCash(), request.amount())) {
             throw new BusinessRuleException(BusinessErrorCode.INSUFFICIENT_CASH,
                     "Số dư két tiền hiện tại (" + (shift.getExpectedCash() != null ? shift.getExpectedCash().toPlainString() : "0")
@@ -169,13 +140,12 @@ public class ShiftServiceImpl implements ShiftService {
                 .type(CashTransactionType.CASH_OUT)
                 .amount(request.amount())
                 .reason(request.reason())
-                .createdBy(principal != null ? principal.userId() : 1)
+                .createdBy(actorId)
                 .approvedBy(manager.getId())
                 .isSelfInitiated(isSelf)
                 .build();
         CashTransaction savedTx = cashTransactionRepository.save(tx);
 
-        // BR-39: Trừ expected_cash trong két bằng Domain Calculator
         shift.setExpectedCash(ShiftCashCalculator.deductCash(shift.getExpectedCash(), request.amount()));
         shiftRepository.save(shift);
 
@@ -190,13 +160,12 @@ public class ShiftServiceImpl implements ShiftService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ShiftResponse closeShift(Integer shiftId, CloseShiftRequest request, UserPrincipal principal) {
-        Shift shift = getOpenShiftOrThrow(shiftId);
+        Shift shift = getOpenShiftForUpdateOrThrow(shiftId);
 
         BigDecimal expected = shift.getExpectedCash() != null ? shift.getExpectedCash() : shift.getOpeningCash();
         BigDecimal counted = request.countedCash();
         BigDecimal variance = ShiftCashCalculator.calculateVariance(counted, expected);
 
-        // BR-38: Nếu có chênh lệch tiền mặt, bắt buộc phải nhập lý do giải trình
         if (ShiftCashCalculator.hasDiscrepancy(counted, expected) && !StringUtils.hasText(request.discrepancyReason())) {
             throw new BusinessRuleException(BusinessErrorCode.REASON_REQUIRED,
                     "Phát hiện chênh lệch tiền mặt thực tế so với sổ sách (" + variance.toPlainString()
@@ -204,22 +173,22 @@ public class ShiftServiceImpl implements ShiftService {
         }
 
         Instant now = Instant.now();
+        Integer actorId = resolveActorId(principal);
         shift.setStatus(ShiftStatus.CLOSED);
         shift.setCountedCash(counted);
         shift.setVariance(variance);
         shift.setDiscrepancyReason(request.discrepancyReason());
-        shift.setClosedBy(principal != null ? principal.userId() : null);
+        shift.setClosedBy(actorId);
         shift.setClosedAt(now);
 
         Shift savedShift = shiftRepository.save(shift);
 
-        // Ghi giao dịch đóng ca
         CashTransaction closeTx = CashTransaction.builder()
                 .shiftId(savedShift.getId())
                 .type(CashTransactionType.CLOSE)
                 .amount(counted)
                 .reason("Đóng ca & kiểm kê két: Thực tế=" + counted + ", Chênh lệch=" + variance)
-                .createdBy(principal != null ? principal.userId() : 1)
+                .createdBy(actorId)
                 .isSelfInitiated(false)
                 .build();
         cashTransactionRepository.save(closeTx);
@@ -234,26 +203,18 @@ public class ShiftServiceImpl implements ShiftService {
 
     @Override
     @Transactional(readOnly = true)
-    public ShiftSummaryResponse getCurrentShiftSummary(Integer branchId) {
+    public ShiftSummaryResponse getCurrentShiftSummary(Integer requestedBranchId) {
+        Integer branchId = BranchContext.resolveBranchScope(requestedBranchId);
         Shift shift = shiftRepository.findFirstByBranchIdAndStatusOrderByOpenedAtDesc(branchId, ShiftStatus.OPEN)
                 .orElseThrow(() -> new BusinessRuleException(BusinessErrorCode.SHIFT_NOT_OPEN,
                         "Chi nhánh chưa mở ca làm việc. Vui lòng mở ca trước khi giao dịch."));
 
         List<CashTransaction> txList = cashTransactionRepository.findByShiftIdOrderByCreatedAtDesc(shift.getId());
 
-        BigDecimal totalIn = BigDecimal.ZERO;
-        BigDecimal totalOut = BigDecimal.ZERO;
-        BigDecimal totalRefund = BigDecimal.ZERO;
-
-        for (CashTransaction tx : txList) {
-            if (tx.getType() == CashTransactionType.CASH_IN) {
-                totalIn = totalIn.add(tx.getAmount());
-            } else if (tx.getType() == CashTransactionType.CASH_OUT) {
-                totalOut = totalOut.add(tx.getAmount());
-            } else if (tx.getType() == CashTransactionType.REFUND_OUT) {
-                totalRefund = totalRefund.add(tx.getAmount());
-            }
-        }
+        List<ShiftCashCalculator.CashEntry> entries = txList.stream()
+                .map(tx -> new ShiftCashCalculator.CashEntry(tx.getType(), tx.getAmount()))
+                .toList();
+        ShiftCashCalculator.CashAggregation agg = ShiftCashCalculator.aggregate(entries);
 
         return new ShiftSummaryResponse(
                 shiftMapper.toShiftResponse(shift),
@@ -261,9 +222,9 @@ public class ShiftServiceImpl implements ShiftService {
                 shift.getOpeningCash(),
                 shift.getCashRevenue(),
                 shift.getTransferRevenue(),
-                totalIn,
-                totalOut,
-                totalRefund,
+                agg.totalIn(),
+                agg.totalOut(),
+                agg.totalRefund(),
                 shift.getExpectedCash()
         );
     }
@@ -271,25 +232,18 @@ public class ShiftServiceImpl implements ShiftService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ShiftScheduleResponse createSchedule(CreateScheduleShiftRequest request, UserPrincipal principal) {
-        // Kiểm tra thời gian bắt đầu < kết thúc qua ShiftSchedulePolicy
+        Integer branchId = BranchContext.resolveBranchScope(request.branchId());
+
         if (!ShiftSchedulePolicy.isValidShiftTime(request.plannedStart(), request.plannedEnd())) {
-            throw new BusinessRuleException(BusinessErrorCode.REASON_REQUIRED,
+            throw new BusinessRuleException(BusinessErrorCode.INVALID_SHIFT_TIME,
                     "Thời gian bắt đầu ca phải trước thời gian kết thúc.");
         }
 
-        // BR-15: Kiểm tra xung đột lịch ca làm việc của nhân viên
         List<Integer> empIds = request.assignedEmployeeIds();
-        for (Integer empId : empIds) {
-            List<ShiftAssignment> conflicts = shiftAssignmentRepository.findConflictingAssignments(
-                    empId, 0, request.plannedStart(), request.plannedEnd());
-            if (!conflicts.isEmpty()) {
-                throw new BusinessRuleException(BusinessErrorCode.SCHEDULE_CONFLICT,
-                        "Nhân viên ID=" + empId + " đã có ca làm việc khác trong khung giờ này.");
-            }
-        }
+        validateScheduleConflicts(empIds, request.plannedStart(), request.plannedEnd());
 
         Shift shift = Shift.builder()
-                .branchId(request.branchId())
+                .branchId(branchId)
                 .shiftDate(request.shiftDate())
                 .shiftType(request.shiftType())
                 .plannedStart(request.plannedStart())
@@ -298,19 +252,7 @@ public class ShiftServiceImpl implements ShiftService {
                 .build();
         Shift savedShift = shiftRepository.save(shift);
 
-        List<Integer> assignedIds = new ArrayList<>();
-        for (Integer empId : empIds) {
-            User emp = userRepository.findById(empId)
-                    .orElseThrow(() -> new NotFoundException("nhân viên ID=" + empId));
-            ShiftAssignment sa = ShiftAssignment.builder()
-                    .id(new ShiftAssignmentId(savedShift.getId(), empId))
-                    .shift(savedShift)
-                    .employee(emp)
-                    .roleInShift(emp.roleCode())
-                    .build();
-            shiftAssignmentRepository.save(sa);
-            assignedIds.add(empId);
-        }
+        List<Integer> assignedIds = assignEmployeesToShift(savedShift, empIds);
 
         auditLogService.log(AuditAction.SCHEDULE_SAVE, "shift", savedShift.getId(), null,
                 "Tạo lịch ca ID=" + savedShift.getId() + " ngày " + request.shiftDate() + ", nhân viên: " + assignedIds);
@@ -320,7 +262,8 @@ public class ShiftServiceImpl implements ShiftService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<ShiftScheduleResponse> getSchedules(Integer branchId, LocalDate startDate, LocalDate endDate) {
+    public List<ShiftScheduleResponse> getSchedules(Integer requestedBranchId, LocalDate startDate, LocalDate endDate) {
+        Integer branchId = BranchContext.resolveBranchScope(requestedBranchId);
         List<Shift> shifts = shiftRepository.findByBranchIdAndShiftDateBetweenOrderByShiftDateAscPlannedStartAsc(
                 branchId, startDate, endDate);
 
@@ -333,9 +276,59 @@ public class ShiftServiceImpl implements ShiftService {
         return result;
     }
 
-    private Shift getOpenShiftOrThrow(Integer shiftId) {
-        Shift shift = shiftRepository.findById(shiftId)
+    private void validateNoOpenShiftInBranch(Integer branchId) {
+        if (shiftRepository.existsByBranchIdAndStatus(branchId, ShiftStatus.OPEN)) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_ALREADY_OPEN,
+                    "Chi nhánh hiện đang có một ca làm việc đang mở. Vui lòng đóng ca trước khi mở ca mới.");
+        }
+    }
+
+    private Shift resolveShift(OpenShiftRequest request, Integer branchId, Instant now) {
+        if (request.scheduledShiftId() != null) {
+            Shift scheduled = shiftRepository.findById(request.scheduledShiftId())
+                    .orElseThrow(() -> new NotFoundException("ca làm việc"));
+            scheduled.setStatus(ShiftStatus.OPEN);
+            return scheduled;
+        }
+
+        LocalTime localNow = LocalTime.now(VN_ZONE);
+        return Shift.builder()
+                .branchId(branchId)
+                .shiftDate(LocalDate.now(VN_ZONE))
+                .shiftType(ShiftSchedulePolicy.inferShiftType(localNow))
+                .plannedStart(now)
+                .plannedEnd(now.plus(Duration.ofHours(8)))
+                .status(ShiftStatus.OPEN)
+                .build();
+    }
+
+    private void populateOpeningFields(Shift shift, BigDecimal openingCash, Integer actorId, Instant now) {
+        shift.setOpenedBy(actorId);
+        shift.setOpenedAt(now);
+        shift.setOpeningCash(openingCash);
+        shift.setExpectedCash(openingCash);
+        shift.setCashRevenue(BigDecimal.ZERO);
+        shift.setTransferRevenue(BigDecimal.ZERO);
+    }
+
+    private void recordOpeningCashTransaction(Integer shiftId, BigDecimal openingCash, String note, Integer actorId) {
+        CashTransaction openTx = CashTransaction.builder()
+                .shiftId(shiftId)
+                .type(CashTransactionType.OPEN)
+                .amount(openingCash)
+                .reason(StringUtils.hasText(note) ? note : "Mở ca & khai báo số dư đầu két")
+                .createdBy(actorId)
+                .isSelfInitiated(false)
+                .build();
+        cashTransactionRepository.save(openTx);
+    }
+
+    private Shift getOpenShiftForUpdateOrThrow(Integer shiftId) {
+        Shift shift = shiftRepository.findByIdForUpdate(shiftId)
                 .orElseThrow(() -> new NotFoundException("ca làm việc"));
+
+        BranchContext.resolveBranchScope(shift.getBranchId());
+
         if (!shift.isOpen()) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_CLOSED, "Ca làm việc này đã đóng, không thể thao tác.");
         }
@@ -361,5 +354,50 @@ public class ShiftServiceImpl implements ShiftService {
                     "Tài khoản xác thực PIN không có vai trò Quản lý chi nhánh (Branch Manager) hoặc COO.");
         }
         return manager;
+    }
+
+    private void validateScheduleConflicts(List<Integer> empIds, Instant plannedStart, Instant plannedEnd) {
+        if (empIds == null || empIds.isEmpty()) {
+            return;
+        }
+        List<ShiftAssignment> conflicts = shiftAssignmentRepository.findConflictingAssignmentsForEmployees(
+                empIds, 0, plannedStart, plannedEnd);
+        if (!conflicts.isEmpty()) {
+            Integer conflictEmpId = conflicts.get(0).getId().getEmployeeId();
+            throw new BusinessRuleException(BusinessErrorCode.SCHEDULE_CONFLICT,
+                    "Nhân viên ID=" + conflictEmpId + " đã có ca làm việc khác trong khung giờ này.");
+        }
+    }
+
+    private List<Integer> assignEmployeesToShift(Shift shift, List<Integer> empIds) {
+        if (empIds == null || empIds.isEmpty()) {
+            return List.of();
+        }
+        Map<Integer, User> userMap = userRepository.findAllById(empIds).stream()
+                .collect(Collectors.toMap(User::getId, Function.identity()));
+
+        List<ShiftAssignment> assignments = new ArrayList<>();
+        List<Integer> assignedIds = new ArrayList<>();
+
+        for (Integer empId : empIds) {
+            User emp = userMap.get(empId);
+            if (emp == null) {
+                throw new NotFoundException("nhân viên ID=" + empId);
+            }
+            ShiftAssignment sa = ShiftAssignment.builder()
+                    .id(new ShiftAssignmentId(shift.getId(), empId))
+                    .shift(shift)
+                    .employee(emp)
+                    .roleInShift(emp.roleCode())
+                    .build();
+            assignments.add(sa);
+            assignedIds.add(empId);
+        }
+        shiftAssignmentRepository.saveAll(assignments);
+        return assignedIds;
+    }
+
+    private Integer resolveActorId(UserPrincipal principal) {
+        return principal != null ? principal.userId() : null;
     }
 }

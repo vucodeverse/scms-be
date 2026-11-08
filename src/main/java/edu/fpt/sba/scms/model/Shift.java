@@ -14,6 +14,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -104,6 +105,10 @@ public class Shift {
     @Column(name = "status", nullable = false, length = 20)
     private ShiftStatus status;
 
+    @Version
+    @Column(name = "row_version")
+    private Long rowVersion;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -139,4 +144,3 @@ public class Shift {
         return status == ShiftStatus.OPEN;
     }
 }
-

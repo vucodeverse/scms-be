@@ -30,5 +30,18 @@ public interface ShiftAssignmentRepository extends JpaRepository<ShiftAssignment
             @Param("excludeShiftId") Integer excludeShiftId,
             @Param("plannedStart") Instant plannedStart,
             @Param("plannedEnd") Instant plannedEnd);
-}
 
+    @Query("""
+            SELECT sa FROM ShiftAssignment sa
+            JOIN sa.shift s
+            WHERE sa.id.employeeId IN :employeeIds
+              AND s.id <> :excludeShiftId
+              AND s.plannedStart < :plannedEnd
+              AND s.plannedEnd > :plannedStart
+            """)
+    List<ShiftAssignment> findConflictingAssignmentsForEmployees(
+            @Param("employeeIds") List<Integer> employeeIds,
+            @Param("excludeShiftId") Integer excludeShiftId,
+            @Param("plannedStart") Instant plannedStart,
+            @Param("plannedEnd") Instant plannedEnd);
+}

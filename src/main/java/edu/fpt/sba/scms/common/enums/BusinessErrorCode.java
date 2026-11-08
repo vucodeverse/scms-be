@@ -35,6 +35,7 @@ public enum BusinessErrorCode {
     INVALID_MANAGER_PIN("Mã PIN của Quản lý chi nhánh không chính xác."),
     MANAGER_PIN_REQUIRED("Thao tác yêu cầu mã PIN phê duyệt của Quản lý chi nhánh."),
     SHIFT_CLOSED("Ca làm việc đã đóng."),
+    INVALID_SHIFT_TIME("Thời gian ca làm việc không hợp lệ."),
     REFUND_NOT_ALLOWED("Đơn hàng không đủ điều kiện hoàn tiền."),
     PAYROLL_LOCKED("Bảng lương đã chốt/duyệt, không thể chỉnh sửa.");
 

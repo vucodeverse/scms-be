@@ -1,10 +1,12 @@
 package edu.fpt.sba.scms.domain;
 
+import edu.fpt.sba.scms.common.enums.CashTransactionType;
 import edu.fpt.sba.scms.domain.shift.ShiftCashCalculator;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -75,5 +77,22 @@ class ShiftCashCalculatorTest {
         );
         assertEquals(BigDecimal.valueOf(1400000), expected);
     }
-}
 
+    @Test
+    @DisplayName("aggregate: Tổng hợp chính xác các giao dịch dòng tiền trong ca")
+    void aggregate_sumsTransactionsCorrectly() {
+        List<ShiftCashCalculator.CashEntry> entries = List.of(
+                new ShiftCashCalculator.CashEntry(CashTransactionType.OPEN, BigDecimal.valueOf(1000000)),
+                new ShiftCashCalculator.CashEntry(CashTransactionType.CASH_IN, BigDecimal.valueOf(200000)),
+                new ShiftCashCalculator.CashEntry(CashTransactionType.CASH_IN, BigDecimal.valueOf(300000)),
+                new ShiftCashCalculator.CashEntry(CashTransactionType.CASH_OUT, BigDecimal.valueOf(150000)),
+                new ShiftCashCalculator.CashEntry(CashTransactionType.REFUND_OUT, BigDecimal.valueOf(50000)),
+                new ShiftCashCalculator.CashEntry(CashTransactionType.CLOSE, BigDecimal.valueOf(1300000))
+        );
+
+        ShiftCashCalculator.CashAggregation result = ShiftCashCalculator.aggregate(entries);
+        assertEquals(BigDecimal.valueOf(500000), result.totalIn());
+        assertEquals(BigDecimal.valueOf(150000), result.totalOut());
+        assertEquals(BigDecimal.valueOf(50000), result.totalRefund());
+    }
+}

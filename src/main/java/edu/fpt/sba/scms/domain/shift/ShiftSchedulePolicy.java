@@ -1,6 +1,9 @@
 package edu.fpt.sba.scms.domain.shift;
 
+import edu.fpt.sba.scms.common.enums.ShiftType;
+
 import java.time.Instant;
+import java.time.LocalTime;
 
 /**
  * Quy tắc nghiệp vụ phân ca và kiểm tra xung đột lịch làm việc (Pure Java - Domain).
@@ -34,5 +37,26 @@ public final class ShiftSchedulePolicy {
         }
         return plannedStart.isBefore(plannedEnd);
     }
-}
 
+    /**
+     * Suy luận loại ca làm việc dựa trên thời gian mở ca theo giờ địa phương.
+     * Sáng (06:00 - 14:00) -> MORNING
+     * Chiều/Tối (14:00 - 22:00) -> EVENING
+     * Đêm (22:00 - 06:00) -> NIGHT
+     */
+    public static ShiftType inferShiftType(LocalTime time) {
+        if (time == null) {
+            return ShiftType.MORNING;
+        }
+        if (time.isBefore(LocalTime.of(6, 0))) {
+            return ShiftType.NIGHT;
+        }
+        if (time.isBefore(LocalTime.of(14, 0))) {
+            return ShiftType.MORNING;
+        }
+        if (time.isBefore(LocalTime.of(22, 0))) {
+            return ShiftType.EVENING;
+        }
+        return ShiftType.NIGHT;
+    }
+}

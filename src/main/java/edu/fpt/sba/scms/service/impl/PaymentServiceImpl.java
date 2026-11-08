@@ -7,11 +7,13 @@ import edu.fpt.sba.scms.common.enums.ErrorCode;
 import edu.fpt.sba.scms.common.enums.OrderStatus;
 import edu.fpt.sba.scms.common.enums.PaymentMethod;
 import edu.fpt.sba.scms.common.enums.PaymentStatus;
+import edu.fpt.sba.scms.common.enums.ShiftStatus;
 import edu.fpt.sba.scms.common.enums.WebhookMatchResult;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
 import edu.fpt.sba.scms.common.exception.UnauthorizedException;
 import edu.fpt.sba.scms.domain.order.OrderPricingCalculator;
+import edu.fpt.sba.scms.domain.shift.ShiftCashCalculator;
 import edu.fpt.sba.scms.dto.request.CreateOrderRequest;
 import edu.fpt.sba.scms.dto.request.ProcessCashPaymentRequest;
 import edu.fpt.sba.scms.dto.request.SepayWebhookRequest;
@@ -31,6 +33,7 @@ import edu.fpt.sba.scms.repository.OrderRepository;
 import edu.fpt.sba.scms.repository.PaymentConfigRepository;
 import edu.fpt.sba.scms.repository.PaymentRepository;
 import edu.fpt.sba.scms.repository.PaymentWebhookLogRepository;
+import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.security.principal.UserPrincipal;
 import edu.fpt.sba.scms.service.PaymentConfigService;
 import edu.fpt.sba.scms.service.PaymentService;
@@ -59,6 +62,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final VietQrPort vietQrPort;
     private final SepayPort sepayPort;
     private final PrinterPort printerPort;
+    private final ShiftRepository shiftRepository;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -118,6 +122,14 @@ public class PaymentServiceImpl implements PaymentService {
                 .status(PaymentStatus.SUCCESS)
                 .build();
         Payment savedPayment = paymentRepository.save(payment);
+
+        // BR-27: Tiền mặt thu ngay vào ca làm việc & cập nhật expected_cash (BR-39)
+        shiftRepository.findFirstByBranchIdAndStatusOrderByOpenedAtDesc(order.getBranchId(), ShiftStatus.OPEN)
+                .ifPresent(shift -> {
+                    shift.setCashRevenue(shift.getCashRevenue().add(finalAmount));
+                    shift.setExpectedCash(ShiftCashCalculator.addCash(shift.getExpectedCash(), finalAmount));
+                    shiftRepository.save(shift);
+                });
 
         // BR-51: Ghi log kiểm toán
         auditLogService.log(AuditAction.PAYMENT_SUCCESS, "payment", savedPayment.getId(), null,
@@ -304,6 +316,13 @@ public class PaymentServiceImpl implements PaymentService {
             order.setStatus(OrderStatus.PAID);
             order.setPaidAt(Instant.now());
             orderRepository.save(order);
+
+            // Ghi nhận doanh thu chuyển khoản của ca đang mở
+            shiftRepository.findFirstByBranchIdAndStatusOrderByOpenedAtDesc(order.getBranchId(), ShiftStatus.OPEN)
+                    .ifPresent(shift -> {
+                        shift.setTransferRevenue(shift.getTransferRevenue().add(amount));
+                        shiftRepository.save(shift);
+                    });
 
             saveWebhookLog(savedPayment.getId(), sepayRef, amount, true, WebhookMatchResult.MATCH, rawPayload);
 

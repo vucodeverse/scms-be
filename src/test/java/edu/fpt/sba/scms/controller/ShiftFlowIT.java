@@ -193,6 +193,8 @@ public class ShiftFlowIT {
                         .header("Authorization", "Bearer " + cooToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.currentCashBalance").value(1050000))
+                .andExpect(jsonPath("$.data.totalCashIn").value(200000))
+                .andExpect(jsonPath("$.data.totalCashOut").value(150000))
                 .andExpect(jsonPath("$.data.transactions", hasSize(3)));
 
         // 5. Đóng ca (Close Shift - UC27):
@@ -254,5 +256,64 @@ public class ShiftFlowIT {
                         .header("Authorization", "Bearer " + cooToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data", hasSize(1)));
+    }
+
+    @Test
+    @DisplayName("BR-27 & BR-39: Doanh thu tiền mặt từ đơn hàng POS tự động cập nhật vào ca đang mở")
+    void testCashPaymentUpdatesShiftRevenue() throws Exception {
+        // 1. Mở ca
+        String openPayload = """
+                {
+                    "branchId": %d,
+                    "openingCash": 1000000,
+                    "note": "Mở ca test bán hàng"
+                }
+                """.formatted(testBranchId);
+
+        mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + cooToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(openPayload))
+                .andExpect(status().isCreated());
+
+        // 2. Tạo đơn hàng 150.000 đ
+        String orderPayload = """
+                {
+                    "branchId": %d,
+                    "totalAmount": 150000,
+                    "discountAmount": 0,
+                    "finalAmount": 150000,
+                    "note": "Đơn test POS tiền mặt"
+                }
+                """.formatted(testBranchId);
+
+        MvcResult orderRes = mockMvc.perform(post("/api/v1/payments/orders")
+                        .header("Authorization", "Bearer " + cooToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(orderPayload))
+                .andExpect(status().isCreated())
+                .andReturn();
+        int orderId = com.jayway.jsonpath.JsonPath.read(orderRes.getResponse().getContentAsString(), "$.data.orderId");
+
+        // 3. Thanh toán tiền mặt (khách đưa 200.000 đ, phải trả 150.000 đ)
+        String cashPayload = """
+                {
+                    "orderId": %d,
+                    "cashReceived": 200000
+                }
+                """.formatted(orderId);
+
+        mockMvc.perform(post("/api/v1/payments/cash")
+                        .header("Authorization", "Bearer " + cooToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(cashPayload))
+                .andExpect(status().isOk());
+
+        // 4. Kiểm tra ca làm việc hiện tại: cashRevenue = 150.000, currentCashBalance = 1.150.000
+        mockMvc.perform(get("/api/v1/shifts/current?branchId=" + testBranchId)
+                        .header("Authorization", "Bearer " + cooToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.cashRevenue").value(150000))
+                .andExpect(jsonPath("$.data.currentCashBalance").value(1150000));
     }
 }
