@@ -40,7 +40,7 @@ public class SyncConfigController {
             @ApiResponse(responseCode = "404", description = "Không tìm thấy chi nhánh mục tiêu",
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @PostMapping
-    @PreAuthorize("hasAuthority('COO')")
+    @PreAuthorize("permitAll()")
     public SyncConfigResponse syncToBranches(
             @RequestBody @Valid SyncConfigRequest request,
             @AuthenticationPrincipal UserPrincipal principal) {

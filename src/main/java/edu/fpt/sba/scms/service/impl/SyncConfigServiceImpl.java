@@ -38,8 +38,11 @@ public class SyncConfigServiceImpl implements SyncConfigService {
         }
 
         String details = "Đồng bộ: Categories=" + request.syncCategories()
+                + (request.categoryIds() != null && !request.categoryIds().isEmpty() ? " (IDs: " + request.categoryIds() + ")" : "")
                 + ", Products=" + request.syncProducts()
+                + (request.productIds() != null && !request.productIds().isEmpty() ? " (IDs: " + request.productIds() + ")" : "")
                 + ", Vouchers=" + request.syncVouchers()
+                + (request.voucherIds() != null && !request.voucherIds().isEmpty() ? " (IDs: " + request.voucherIds() + ")" : "")
                 + " xuống chi nhánh: " + successfulBranchIds;
 
         auditLogService.log(AuditAction.SYNC_PUBLISH, "chain_sync", null, null, details);
