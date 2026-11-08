@@ -31,3 +31,4 @@ public class IngredientController {
         return ingredientRepository.findAllByStatusOrderByNameAsc(status != null ? status.toUpperCase() : "ACTIVE");
     }
 }
+
