@@ -19,3 +19,4 @@ public record SyncPreviewDto(
         List<VoucherDto> vouchers
 ) {
 }
+
