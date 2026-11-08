@@ -151,6 +151,14 @@ public class UserServiceImpl implements UserService {
         applyCard(user, request.cardCode(), null);
 
         userRepository.save(user);
+        if (position == Roles.BRANCH_MANAGER && branchId != null) {
+            branchRepository.findById(branchId).ifPresent(b -> {
+                if (b.getManagerId() == null) {
+                    b.setManagerId(user.getId());
+                    branchRepository.save(b);
+                }
+            });
+        }
         audit(position == Roles.BRANCH_MANAGER ? AuditAction.MANAGER_CREATE : AuditAction.EMPLOYEE_CREATE,
                 user.getId(), null, snapshot(user));
         return toDto(user, null);
