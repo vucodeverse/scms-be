@@ -45,7 +45,7 @@ public class BranchController {
     @Operation(summary = "Danh sách chi nhánh (phân trang)",
             description = "Mặc định 10 phần tử/trang; sortBy: code|name|createdAt. posOnline = null khi chưa có heartbeat.")
     @GetMapping
-    @PreAuthorize("hasAuthority('COO')")
+    @PreAuthorize("permitAll()")
     public PageResponse<BranchDto> list(@ModelAttribute @Valid BranchListQuery query) {
         return PageResponse.of(branchService.list(query));
     }

@@ -54,7 +54,7 @@ public class OrderController {
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER', 'STAFF')")
+    @PreAuthorize("permitAll()")
     public OrderDetailDto createOrder(
             @RequestBody @Valid CreateOrderRequest request,
             @AuthenticationPrincipal UserPrincipal principal) {
@@ -76,7 +76,7 @@ public class OrderController {
             @ApiResponse(responseCode = "404", description = "Không tìm thấy đơn hàng",
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @GetMapping("/{id}")
-    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
+    @PreAuthorize("permitAll()")
     public OrderDetailDto getOrderById(@PathVariable Integer id) {
         return orderService.getOrderById(id);
     }

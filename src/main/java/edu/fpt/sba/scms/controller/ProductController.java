@@ -64,7 +64,7 @@ public class ProductController {
             description = "Mặc định 10 phần tử/trang; lọc keyword/categoryId/status; sortBy: name|basePrice|createdAt.")
     @ApiResponse(responseCode = "200", description = "OK")
     @GetMapping
-    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER')")
+    @PreAuthorize("permitAll()")
     public PageResponse<ProductDto> list(@ModelAttribute @Valid ProductListQuery query) {
         return PageResponse.of(productService.list(query));
     }
@@ -129,7 +129,7 @@ public class ProductController {
     @Operation(summary = "Danh sách giá size của sản phẩm")
     @ApiResponse(responseCode = "200", description = "OK")
     @GetMapping("/{id}/sizes")
-    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER')")
+    @PreAuthorize("permitAll()")
     public List<ProductSizeDto> sizes(@PathVariable Integer id) {
         return productSizeService.list(id);
     }
