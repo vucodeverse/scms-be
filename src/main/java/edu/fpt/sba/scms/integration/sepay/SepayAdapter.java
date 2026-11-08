@@ -29,17 +29,32 @@ public class SepayAdapter implements SepayPort {
 
     @Override
     public Integer extractOrderId(String narration, String prefix) {
-        if (narration == null || narration.isBlank() || prefix == null || prefix.isBlank()) {
+        if (narration == null || narration.isBlank()) {
             return null;
         }
-        Pattern pattern = Pattern.compile(Pattern.quote(prefix) + "\\s*([0-9]+)", Pattern.CASE_INSENSITIVE);
-        Matcher matcher = pattern.matcher(narration);
-        if (matcher.find()) {
+
+        // 1. Ưu tiên bóc tách theo tiền tố cấu hình
+        if (prefix != null && !prefix.isBlank()) {
+            Pattern pattern = Pattern.compile(Pattern.quote(prefix.trim()) + "\\s*([0-9]+)", Pattern.CASE_INSENSITIVE);
+            Matcher matcher = pattern.matcher(narration);
+            if (matcher.find()) {
+                try {
+                    return Integer.parseInt(matcher.group(1));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+
+        // 2. Fallback: tự động nhận diện các tiền tố thông dụng (CO, CAFE, ORD, DH)
+        Pattern fallbackPattern = Pattern.compile("(?:CO|CAFE|ORD|DH)\\s*([0-9]+)", Pattern.CASE_INSENSITIVE);
+        Matcher fallbackMatcher = fallbackPattern.matcher(narration);
+        if (fallbackMatcher.find()) {
             try {
-                return Integer.parseInt(matcher.group(1));
+                return Integer.parseInt(fallbackMatcher.group(1));
             } catch (NumberFormatException ignored) {
             }
         }
+
         return null;
     }
 }
