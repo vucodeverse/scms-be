@@ -7,10 +7,12 @@ import edu.fpt.sba.scms.common.enums.UserStatus;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
 import edu.fpt.sba.scms.common.exception.InvalidPinException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
+import edu.fpt.sba.scms.domain.attendance.AttendanceCalculator;
 import edu.fpt.sba.scms.dto.request.CardAttendanceRequest;
 import edu.fpt.sba.scms.dto.request.PinAttendanceRequest;
 import edu.fpt.sba.scms.dto.response.AttendanceResultDto;
 import edu.fpt.sba.scms.dto.response.KioskEmployeeDto;
+import edu.fpt.sba.scms.mapper.AttendanceMapper;
 import edu.fpt.sba.scms.model.Attendance;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.AttendanceRepository;
@@ -24,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -37,9 +40,10 @@ public class AttendanceServiceImpl implements AttendanceService {
     private final AttendanceRepository attendanceRepository;
     private final UserRepository userRepository;
     private final PinHasher pinHasher;
+    private final AttendanceMapper attendanceMapper;
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public AttendanceResultDto checkIn(PinAttendanceRequest request) {
         User user = authenticateByPin(request);
 
@@ -54,6 +58,8 @@ public class AttendanceServiceImpl implements AttendanceService {
         Attendance attendance = Attendance.builder()
                 .userId(user.getId())
                 .branchId(request.branchId())
+                .workDate(LocalDate.now())
+                .method("PIN")
                 .checkInTime(now)
                 .status(AttendanceStatus.CHECKED_IN)
                 .notes(request.notes())
@@ -62,11 +68,11 @@ public class AttendanceServiceImpl implements AttendanceService {
         Attendance saved = attendanceRepository.save(attendance);
         log.info("Nhân viên '{}' (ID={}) check-in thành công tại chi nhánh {}", user.getFullName(), user.getId(), request.branchId());
 
-        return toDto(saved, user, "Check-in thành công.");
+        return attendanceMapper.toResultDto(saved, user, "Check-in thành công.");
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public AttendanceResultDto checkOut(PinAttendanceRequest request) {
         User user = authenticateByPin(request);
 
@@ -76,7 +82,13 @@ public class AttendanceServiceImpl implements AttendanceService {
                 .orElseThrow(() -> new BusinessRuleException(BusinessErrorCode.ATTENDANCE_NO_OPEN));
 
         Instant now = Instant.now();
-        long workedMinutes = Math.max(0, Duration.between(attendance.getCheckInTime(), now).toMinutes());
+        long workedMinutes = AttendanceCalculator.calculateWorkedMinutes(attendance.getCheckInTime(), now);
+
+        // BR-07: Khoảng cách tối thiểu giữa lần Check-in và Check-out phải >= 15 phút (kiểm tra qua AttendanceCalculator)
+        if (!AttendanceCalculator.isMinIntervalSatisfied(workedMinutes)) {
+            throw new BusinessRuleException(BusinessErrorCode.ATTENDANCE_MIN_INTERVAL,
+                    "Khoảng cách chấm công tối thiểu giữa lần check-in và check-out phải từ 15 phút trở lên (BR-07).");
+        }
 
         attendance.setCheckOutTime(now);
         attendance.setWorkedMinutes(workedMinutes);
@@ -89,11 +101,11 @@ public class AttendanceServiceImpl implements AttendanceService {
         Attendance saved = attendanceRepository.save(attendance);
         log.info("Nhân viên '{}' (ID={}) check-out thành công. Tổng phút làm việc: {}", user.getFullName(), user.getId(), workedMinutes);
 
-        return toDto(saved, user, "Check-out thành công. Tổng thời gian làm việc: " + workedMinutes + " phút.");
+        return attendanceMapper.toResultDto(saved, user, "Check-out thành công. Tổng thời gian làm việc: " + workedMinutes + " phút.");
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public AttendanceResultDto cardSwipe(CardAttendanceRequest request) {
         List<User> activeUsers = userRepository.findAllByBranchIdAndStatus(request.branchId(), UserStatus.ACTIVE);
         User user = activeUsers.stream()
@@ -110,28 +122,37 @@ public class AttendanceServiceImpl implements AttendanceService {
             Instant now = Instant.now();
             long workedMinutes = Math.max(0, Duration.between(attendance.getCheckInTime(), now).toMinutes());
 
+            // BR-07: Khoảng cách tối thiểu giữa lần Check-in và Check-out phải >= 15 phút
+            if (workedMinutes < 15) {
+                throw new BusinessRuleException(BusinessErrorCode.ATTENDANCE_MIN_INTERVAL,
+                        "Khoảng cách chấm công tối thiểu giữa lần check-in và check-out phải từ 15 phút trở lên (BR-07).");
+            }
+
             attendance.setCheckOutTime(now);
             attendance.setWorkedMinutes(workedMinutes);
             attendance.setStatus(AttendanceStatus.COMPLETED);
+            attendance.setMethod("RFID");
             if (request.notes() != null && !request.notes().isBlank()) {
                 attendance.setNotes(request.notes());
             }
             Attendance saved = attendanceRepository.save(attendance);
             log.info("Quẹt thẻ check-out: user={}, workedMinutes={}", user.getId(), workedMinutes);
-            return toDto(saved, user, "Check-out thành công qua thẻ. Tổng thời gian: " + workedMinutes + " phút.");
+            return attendanceMapper.toResultDto(saved, user, "Check-out thành công qua thẻ. Tổng thời gian: " + workedMinutes + " phút.");
         } else {
             // Chưa check-in -> thực hiện check-in
             Instant now = Instant.now();
             Attendance attendance = Attendance.builder()
                     .userId(user.getId())
                     .branchId(request.branchId())
+                    .workDate(LocalDate.now())
+                    .method("RFID")
                     .checkInTime(now)
                     .status(AttendanceStatus.CHECKED_IN)
                     .notes(request.notes())
                     .build();
             Attendance saved = attendanceRepository.save(attendance);
             log.info("Quẹt thẻ check-in: user={}, branch={}", user.getId(), request.branchId());
-            return toDto(saved, user, "Check-in thành công qua thẻ.");
+            return attendanceMapper.toResultDto(saved, user, "Check-in thành công qua thẻ.");
         }
     }
 
@@ -145,11 +166,7 @@ public class AttendanceServiceImpl implements AttendanceService {
                 .collect(Collectors.toSet());
 
         return users.stream()
-                .map(u -> new KioskEmployeeDto(
-                        u.getId(),
-                        u.getFullName(),
-                        u.roleCode(),
-                        checkedInIds.contains(u.getId())))
+                .map(u -> attendanceMapper.toKioskDto(u, checkedInIds.contains(u.getId())))
                 .toList();
     }
 
@@ -163,27 +180,16 @@ public class AttendanceServiceImpl implements AttendanceService {
                 .findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(employeeId);
 
         if (openAttendance.isPresent()) {
-            return toDto(openAttendance.get(), user, "Đang trong ca làm việc.");
+            return attendanceMapper.toResultDto(openAttendance.get(), user, "Đang trong ca làm việc.");
         }
 
         // Tìm lượt gần nhất đã hoàn thành
         List<Attendance> list = attendanceRepository.findAllByUserIdOrderByCheckInTimeDesc(employeeId);
         if (!list.isEmpty()) {
-            return toDto(list.get(0), user, "Chưa vào ca làm việc.");
+            return attendanceMapper.toResultDto(list.get(0), user, "Chưa vào ca làm việc.");
         }
 
-        return new AttendanceResultDto(
-                null,
-                user.getId(),
-                user.getFullName(),
-                user.roleCode(),
-                user.getBranchId(),
-                null,
-                null,
-                null,
-                null,
-                "Chưa có dữ liệu chấm công."
-        );
+        return attendanceMapper.toNoRecordDto(user, "Chưa có dữ liệu chấm công.");
     }
 
     private User authenticateByPin(PinAttendanceRequest request) {
@@ -211,20 +217,5 @@ public class AttendanceServiceImpl implements AttendanceService {
         }
 
         return user;
-    }
-
-    private AttendanceResultDto toDto(Attendance attendance, User user, String message) {
-        return new AttendanceResultDto(
-                attendance.getId(),
-                user.getId(),
-                user.getFullName(),
-                user.roleCode(),
-                attendance.getBranchId(),
-                attendance.getCheckInTime(),
-                attendance.getCheckOutTime(),
-                attendance.getWorkedMinutes(),
-                attendance.getStatus(),
-                message
-        );
     }
 }

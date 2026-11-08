@@ -233,14 +233,24 @@ class ArchitectureTest {
                             "handler..", "config..", "integration..", "domain.."));
 
     // ---------------- integration ----------------
+        /**
+     * Tầng integration mặc định chỉ dùng common và thư viện nền.
+     * Ngoại lệ: Adapter hiện thực cổng phân hệ kho (IngredientLookupAdapter) nối CSDL kho cho module khác.
+     */
     @ArchTest
     static final ArchRule integration_chi_common_va_thu_vien_nen =
             noClasses().that().resideInAPackage(ROOT + ".integration..")
+                    .and().doNotHaveFullyQualifiedName(ROOT + ".integration.inventory.IngredientLookupAdapter")
                     .should().dependOnClassesThat()
                     .resideInAnyPackage(deny("controller..", "service..", "repository..", "model..", "mapper..",
                             "security..", "domain..", "handler..", "dto..", "config.."))
                     .allowEmptyShould(true);
 
+    @ArchTest
+    static final ArchRule ingredient_lookup_adapter_chi_dung_repository_va_model =
+            classes().that().haveFullyQualifiedName(ROOT + ".integration.inventory.IngredientLookupAdapter")
+                    .should().onlyDependOnClassesThat()
+                    .resideInAnyPackage(allow("integration..", "repository..", "model..", "common.."));
     // ---------------- security ----------------
     @ArchTest
     static final ArchRule security_chi_dung_repository_model_common_dto_config =

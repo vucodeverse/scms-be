@@ -30,5 +30,14 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Integer>
      */
     @Query("select a from Attendance a join fetch a.user where a.branchId = :branchId order by a.checkInTime desc")
     List<Attendance> findAllWithUserByBranchId(@Param("branchId") Integer branchId);
+
+    /**
+     * Danh sách chấm công đã hoàn tất trong khoảng thời gian phục vụ tính lương (UC45).
+     */
+    @Query("select a from Attendance a where a.branchId = :branchId and a.checkInTime >= :startTime and a.checkInTime <= :endTime and a.checkOutTime is not null")
+    List<Attendance> findCompletedAttendancesInPeriod(
+            @Param("branchId") Integer branchId,
+            @Param("startTime") java.time.Instant startTime,
+            @Param("endTime") java.time.Instant endTime);
 }
 

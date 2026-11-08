@@ -1,5 +1,6 @@
 package edu.fpt.sba.scms.controller;
 
+import edu.fpt.sba.scms.repository.AttendanceRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -11,6 +12,8 @@ import org.springframework.test.web.servlet.MvcResult;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,6 +37,9 @@ class AttendanceAndRoleIT {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private AttendanceRepository attendanceRepository;
 
     private String cooToken() throws Exception {
         MvcResult result = mockMvc.perform(post("/api/v1/auth/login").contentType(JSON)
@@ -160,6 +166,19 @@ class AttendanceAndRoleIT {
         mockMvc.perform(get("/api/v1/attendance/status/" + employeeId))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("CHECKED_IN"));
+
+        // 6b. Check-out ngay khi chưa đủ 15 phút -> 422 ATTENDANCE_MIN_INTERVAL (BR-07)
+        mockMvc.perform(post("/api/v1/attendance/check-out")
+                        .contentType(JSON)
+                        .content("{\"employeeId\":" + employeeId + ",\"pin\":\"" + pin + "\",\"branchId\":" + branchId + "}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("ATTENDANCE_MIN_INTERVAL"));
+
+        // Giả lập thời gian đã trôi qua 20 phút để thực hiện check-out hợp lệ
+        attendanceRepository.findAllByUserIdOrderByCheckInTimeDesc(employeeId).forEach(att -> {
+            att.setCheckInTime(Instant.now().minus(Duration.ofMinutes(20)));
+            attendanceRepository.save(att);
+        });
 
         // 7. Check-out với PIN đúng (UC04) -> 200 OK
         mockMvc.perform(post("/api/v1/attendance/check-out")
