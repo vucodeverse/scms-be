@@ -5,6 +5,7 @@ import edu.fpt.sba.scms.common.enums.AuditAction;
 import edu.fpt.sba.scms.common.enums.BranchStatus;
 import edu.fpt.sba.scms.common.enums.BusinessErrorCode;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
+import edu.fpt.sba.scms.common.enums.Roles;
 import edu.fpt.sba.scms.common.enums.UserStatus;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
 import edu.fpt.sba.scms.common.exception.ConflictException;
@@ -185,10 +186,14 @@ public class BranchServiceImpl implements BranchService {
     }
 
     private String managerName(Branch branch) {
-        if (branch.getManagerId() == null) {
-            return null;
+        if (branch.getManagerId() != null) {
+            return userRepository.findById(branch.getManagerId()).map(User::getFullName).orElse(null);
         }
-        return userRepository.findById(branch.getManagerId()).map(User::getFullName).orElse(null);
+        return userRepository.findAllByBranchIdAndStatus(branch.getId(), UserStatus.ACTIVE).stream()
+                .filter(u -> u.getPosition() == Roles.BRANCH_MANAGER)
+                .map(User::getFullName)
+                .findFirst()
+                .orElse(null);
     }
 
     private static String roleCodeOf(User user) {
