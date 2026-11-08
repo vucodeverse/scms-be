@@ -52,7 +52,7 @@ public final class BranchContext {
     public static Integer resolveBranchScope(Integer requestedBranchId) {
         Info info = CURRENT.get();
         if (info == null) {
-            return requestedBranchId != null ? requestedBranchId : 1;
+            return requestedBranchId;
         }
         if (info.isCoo()) {
             return requestedBranchId;

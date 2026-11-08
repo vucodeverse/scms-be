@@ -64,7 +64,7 @@ public class OrderController {
     @Operation(summary = "Tra cứu danh sách đơn hàng POS (UC18)",
             description = "Lọc đơn hàng theo chi nhánh, trạng thái, khoảng ngày giờ, từ khóa hóa đơn và phân trang.")
     @GetMapping
-    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
+    @PreAuthorize("permitAll()")
     public PageResponse<OrderDto> listOrders(@ModelAttribute @Valid OrderListQuery query) {
         return PageResponse.of(orderService.listOrders(query));
     }
@@ -90,7 +90,7 @@ public class OrderController {
             @ApiResponse(responseCode = "422", description = "Voucher hết hạn, chưa đạt giá trị tối thiểu hoặc đơn đã có voucher",
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @PostMapping("/{id}/voucher")
-    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
+    @PreAuthorize("permitAll()")
     public OrderDetailDto applyVoucher(
             @PathVariable Integer id,
             @RequestBody @Valid ApplyVoucherRequest request) {
@@ -100,7 +100,7 @@ public class OrderController {
     @Operation(summary = "Gỡ bỏ voucher khỏi đơn hàng (UC17)",
             description = "Hủy mã voucher đã áp dụng và khôi phục lại giá trị thanh toán gốc của đơn hàng.")
     @DeleteMapping("/{id}/voucher")
-    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
+    @PreAuthorize("permitAll()")
     public OrderDetailDto removeVoucher(@PathVariable Integer id) {
         return orderService.removeVoucher(id);
     }
@@ -114,7 +114,7 @@ public class OrderController {
             @ApiResponse(responseCode = "422", description = "Đơn hàng đã thanh toán hoặc thiếu lý do hủy",
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @PostMapping("/{id}/cancel")
-    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
+    @PreAuthorize("permitAll()")
     public OrderDto cancelOrder(
             @PathVariable Integer id,
             @RequestBody @Valid CancelOrderRequest request,

@@ -17,6 +17,8 @@ public final class PublicRoutes {
             "/api/v1/products/**",
             "/api/v1/menu-categories",
             "/api/v1/menu-categories/**",
+            "/api/v1/toppings",
+            "/api/v1/toppings/**",
             "/api/v1/branches",
             "/api/v1/branches/**",
             "/api/v1/orders",
