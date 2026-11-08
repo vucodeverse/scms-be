@@ -45,7 +45,9 @@ public class IngredientLookupAdapter implements IngredientLookupPort {
                         ing -> new IngredientInfo(
                                 ing.getId().intValue(),
                                 ing.getName(),
-                                ing.getBaseUnit()
+                                ing.getBaseUnit(),
+                                ing.getUnitCost(),
+                                ing.getStatus()
                         ),
                         (existing, replacement) -> existing
                 ));
