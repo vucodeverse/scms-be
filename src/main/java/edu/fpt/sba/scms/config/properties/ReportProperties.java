@@ -1,6 +1,5 @@
 package edu.fpt.sba.scms.config.properties;
 
-import edu.fpt.sba.scms.common.enums.ReportSource;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.math.BigDecimal;
@@ -9,29 +8,28 @@ import java.math.BigDecimal;
  * Cấu hình module Reporting &amp; Analytics (UC34–UC42), prefix {@code app.report}.
  * <p>
  * Tách khỏi {@link AppProperties} để module report không sửa record dùng chung (và các test đang dựng
- * {@code new AppProperties(...)}). Được nhận qua {@code @ConfigurationPropertiesScan} ở {@code ScmsBeApplication}.
+ * {@code new AppProperties(...)}). Được bật bởi {@code config.ReportConfig}.
  * <p>
  * Thiếu khoá nào thì dùng mặc định theo SRS; giá trị sai thì báo lỗi ngay lúc khởi động (compact constructor),
  * không chờ tới lúc gọi report.
  *
- * @param source           nguồn dữ liệu report: {@code NONE} = adapter rỗng (module nguồn chưa có bảng),
- *                         {@code SQL} = adapter native SQL theo schema SDD §5.1
  * @param maxRangeDays     số ngày tối đa của một khoảng lọc {@code from..to} (bảo vệ DB)
  * @param openHour         giờ bắt đầu slot đầu tiên của Peak Hours (UC42 BR-01: 06:00)
  * @param closeHour        giờ kết thúc slot cuối (UC42 BR-01: 23:00), slot cuối = {@code [closeHour-1, closeHour)}
  * @param peakTierRatio    slot là "giờ cao điểm" khi {@code count >= ratio × max} (UC42 BR-04), trong (0, 1]
  * @param topProductsLimit số sản phẩm mặc định của báo cáo bán chạy (UC41 BR-03: top 10)
  * @param maxTopProducts   trần cho tham số {@code limit} client gửi lên
+ * @param lateGraceMinutes số phút dung sai khi xét đi muộn / về sớm so với giờ ca dự kiến (UC39)
  */
 @ConfigurationProperties(prefix = "app.report")
 public record ReportProperties(
-        ReportSource source,
         Integer maxRangeDays,
         Integer openHour,
         Integer closeHour,
         BigDecimal peakTierRatio,
         Integer topProductsLimit,
-        Integer maxTopProducts) {
+        Integer maxTopProducts,
+        Integer lateGraceMinutes) {
 
     public static final int DEFAULT_MAX_RANGE_DAYS = 366;
     public static final int DEFAULT_OPEN_HOUR = 6;
@@ -39,15 +37,16 @@ public record ReportProperties(
     public static final BigDecimal DEFAULT_PEAK_TIER_RATIO = new BigDecimal("0.80");
     public static final int DEFAULT_TOP_PRODUCTS_LIMIT = 10;
     public static final int DEFAULT_MAX_TOP_PRODUCTS = 100;
+    public static final int DEFAULT_LATE_GRACE_MINUTES = 5;
 
     public ReportProperties {
-        source = source == null ? ReportSource.NONE : source;
         maxRangeDays = maxRangeDays == null ? DEFAULT_MAX_RANGE_DAYS : maxRangeDays;
         openHour = openHour == null ? DEFAULT_OPEN_HOUR : openHour;
         closeHour = closeHour == null ? DEFAULT_CLOSE_HOUR : closeHour;
         peakTierRatio = peakTierRatio == null ? DEFAULT_PEAK_TIER_RATIO : peakTierRatio;
         topProductsLimit = topProductsLimit == null ? DEFAULT_TOP_PRODUCTS_LIMIT : topProductsLimit;
         maxTopProducts = maxTopProducts == null ? DEFAULT_MAX_TOP_PRODUCTS : maxTopProducts;
+        lateGraceMinutes = lateGraceMinutes == null ? DEFAULT_LATE_GRACE_MINUTES : lateGraceMinutes;
 
         require(maxRangeDays >= 1, "app.report.max-range-days phải >= 1");
         require(openHour >= 0 && openHour <= 23, "app.report.open-hour phải trong [0, 23]");
@@ -57,6 +56,7 @@ public record ReportProperties(
                 "app.report.peak-tier-ratio phải trong (0, 1]");
         require(topProductsLimit >= 1, "app.report.top-products-limit phải >= 1");
         require(maxTopProducts >= topProductsLimit, "app.report.max-top-products phải >= top-products-limit");
+        require(lateGraceMinutes >= 0, "app.report.late-grace-minutes phải >= 0");
     }
 
     /** Cấu hình mặc định theo SRS — dùng cho unit test không cần Spring. */

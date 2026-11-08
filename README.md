@@ -115,3 +115,27 @@ lỗi), timestamp ISO-8601 UTC, `traceId` luôn có + header `X-Trace-Id`.
 Refresh rotation **thu hồi nguyên tử ở DB** (`UPDATE ... WHERE revoked_at IS NULL`): nhiều request đồng thời cùng một
 token thì chỉ một request được cấp cặp token mới (test `AuthConcurrencyIT`).
 Access token 30 phút (HS256, claim `uid/role/bid/jti/typ`), refresh token 7 ngày, lưu SHA-256 trong bảng `auth_token`.
+
+## M10 — Reporting & Analytics (UC34–UC42)
+
+Chỉ đọc, `GET`, ngày lọc `from`/`to` theo **giờ VN** (`yyyy-MM-dd`, bỏ trống = hôm nay, tối đa `app.report.max-range-days`).
+BM chỉ xem chi nhánh của mình (bỏ trống `branchId`; gửi chi nhánh khác → 403 `CROSS_BRANCH_DENIED`); COO chọn `branchId`.
+Doanh thu chỉ tính đơn `PAID` + `PARTIALLY_REFUNDED` (loại `PENDING`/`CANCELLED`/`REFUNDED`).
+
+| Endpoint | UC | Quyền | Ghi chú |
+|---|---|---|---|
+| `/api/v1/reports/dashboard` | UC34 | COO, BM | KPI hôm nay vs hôm qua, 7 ngày, két ca đang mở, tồn thấp, chấm công; mỗi widget `status` OK/ERROR riêng |
+| `/api/v1/reports/sales` | UC35 | COO, BM | `shiftId`, `paymentMethod`; tổng hợp, theo ngày, payment mix theo ca, top sản phẩm |
+| `/api/v1/reports/cash-flow` | UC37 | COO, BM | `shiftId`; expected/variance (BR-38/39), ca chưa đóng = `UNRECONCILED` |
+| `/api/v1/reports/inventory` | UC38 | COO, BM | tồn đầu/cuối kỳ, nhập/xuất/hủy/điều chỉnh, kiểm kê gần nhất (`UNCOUNTED`), tồn thấp |
+| `/api/v1/reports/hr-shifts` | UC39 | COO, BM | giờ công, đi muộn/về sớm (dung sai `app.report.late-grace-minutes`), vắng, quên check-out, năng suất thu ngân |
+| `/api/v1/reports/consolidated-financial` | UC40 | COO | `branchIds` (trống = tất cả); doanh thu − giá vốn (snapshot hoặc công thức × đơn giá) |
+| `/api/v1/reports/product-sales` | UC41 | COO | `ranking=BEST_SELLING\|SLOW_SELLING`, `limit` (mặc định 10); `branchId` trống = toàn chuỗi |
+| `/api/v1/reports/peak-hours` | UC42 | COO, BM | 17 slot 06–23h theo giờ tạo đơn, slot ≥ 80% max = cao điểm; COO bỏ `branchId` = toàn chuỗi |
+| `/api/v1/reports/{type}/export?format=XLSX\|PDF` | UC36 | như API xem | `type` ∈ `sales, cash-flow, inventory, hr-shifts, consolidated-financial, product-sales, peak-hours`; cùng bộ lọc với API xem; rỗng → 422 `REPORT_NO_DATA_TO_EXPORT`; ghi audit `REPORT_EXPORT` |
+
+Truy vấn tổng hợp nằm ở `repository/*ReportRepository` (gom giờ theo UTC rồi đổi sang giờ VN ở service — chạy được cả
+MySQL và H2), phép tính ở `service/report/*Calculator` (hàm thuần, có unit test), ghi file ở `integration/export`
+(Apache POI / OpenPDF + font LiberationSans cho tiếng Việt). Index nên có cho dữ liệu lớn:
+`orders(branch_id, status, paid_at)`, `orders(branch_id, created_at)`, `payment(order_id, status)`,
+`shift(branch_id, shift_date)`, `attendance(branch_id, check_in_time)`.

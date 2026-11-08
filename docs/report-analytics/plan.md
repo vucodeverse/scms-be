@@ -12,6 +12,23 @@
 > **không có** `shift_id`, `work_date`, `method`, và chưa có trạng thái `LATE` / `EARLY_LEAVE`. Bảng `shift` /
 > `shift_assignment` vẫn chưa có. Ảnh hưởng tới UC39 / UC34 ghi ở §3 (UC39), Phase 6 và §8.
 
+>
+> **Cập nhật 2026-11-08 — đã hoàn thành UC34–UC42 sau khi merge `origin/main` @ `ae38785`.** Lúc này Order/Payment/Refund,
+> Shift/CashTransaction/ShiftAssignment, Inventory/StockTransaction/Stocktake đều đã có entity thật, nên **bỏ lớp
+> port + adapter rỗng (§2.1–2.3, Phase 2, Phase 6)**: report đọc trực tiếp qua 4 repository chỉ-đọc
+> (`SalesReportRepository`, `CashFlowReportRepository`, `InventoryReportRepository`, `HrReportRepository`, kế thừa
+> `Repository` — không lộ thao tác ghi). Bỏ `app.report.source` / `ReportSource`; thêm `app.report.late-grace-minutes`.
+> Các điểm khác so với plan:
+> - Export có thêm **PDF** (OpenPDF, font LiberationSans nhúng để hiển thị tiếng Việt) — ảnh yêu cầu UC36 ghi "Excel hoặc PDF".
+>   Endpoint tách theo từng report: `GET /api/v1/reports/{type}/export?format=XLSX|PDF` (mỗi endpoint nhận đúng query của API xem).
+> - UC39 (HR) mở cho cả COO vì UC36 cho COO xuất "Employee Hours" (câu hỏi §8.5).
+> - UC41 thêm `ranking=SLOW_SELLING` (bán chậm, gồm cả món chưa bán được ly nào).
+> - UC40: `order_line.cogs_amount` hiện chưa được ghi → giá vốn tính từ `recipe × unit_cost`; nếu sau này có snapshot thì
+>   tự dùng snapshot.
+> - Doanh thu: đơn `PAID` + `PARTIALLY_REFUNDED`, thời điểm theo `paid_at`; net = trừ refund `DONE` của các đơn đó.
+>   Peak hours theo `created_at` (UC42 BR-03). Ngưỡng cao điểm: ≥ 80% slot cao nhất.
+> - Dashboard COO bắt buộc chọn chi nhánh (câu hỏi §8.6).
+
 ---
 
 ## 1. Phạm vi
@@ -170,7 +187,7 @@ Lý do:
 
 > Mỗi bước = 1 commit (hoặc 1 PR nhỏ) trên `feature/report-analytics`. Ước lượng tính bằng ngày công.
 
-**Tiến độ (cập nhật 2026-11-05):** Phase 0 ✅ (trừ 0.1 — chờ trao đổi) · Phase 1 ✅ · Phase 2–7 chưa bắt đầu.
+**Tiến độ (cập nhật 2026-11-08):** Phase 0, 1, 3, 4, 5, 7.1, 7.4 ✅ · Phase 2 & 6 không cần nữa (xem ghi chú đầu file) · Test: unit test cho mọi calculator + writer, `ReportIT` end-to-end trên H2 (9 kịch bản). Còn optional: 7.3 cache dashboard.
 
 ### Phase 0 — Chuẩn bị (0.5d)
 - [ ] 0.1 Chốt các câu hỏi mở ở §8 với Người 1/2/3 (đặc biệt: tên bảng, status, dấu ADJUST, định nghĩa net revenue).
