@@ -37,7 +37,9 @@ public enum BusinessErrorCode {
     SHIFT_CLOSED("Ca làm việc đã đóng."),
     INVALID_SHIFT_TIME("Thời gian ca làm việc không hợp lệ."),
     REFUND_NOT_ALLOWED("Đơn hàng không đủ điều kiện hoàn tiền."),
-    PAYROLL_LOCKED("Bảng lương đã chốt/duyệt, không thể chỉnh sửa.");
+    PAYROLL_LOCKED("Bảng lương đã chốt/duyệt, không thể chỉnh sửa."),
+    REPORT_NO_DATA_TO_EXPORT("Không có dữ liệu để xuất.");
+
 
     private final String message;
 
