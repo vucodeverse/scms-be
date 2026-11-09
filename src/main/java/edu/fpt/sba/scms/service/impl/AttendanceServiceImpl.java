@@ -22,7 +22,9 @@ import edu.fpt.sba.scms.model.ShiftAssignment;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.AttendanceRepository;
 import edu.fpt.sba.scms.repository.ShiftAssignmentRepository;
+import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
+import edu.fpt.sba.scms.common.enums.Roles;
 import edu.fpt.sba.scms.service.AttendanceService;
 import edu.fpt.sba.scms.service.support.PinHasher;
 import edu.fpt.sba.scms.service.support.PinLockoutService;
@@ -53,6 +55,7 @@ public class AttendanceServiceImpl implements AttendanceService {
 
     private final AttendanceRepository attendanceRepository;
     private final ShiftAssignmentRepository shiftAssignmentRepository;
+    private final ShiftRepository shiftRepository;
     private final UserRepository userRepository;
     private final PinHasher pinHasher;
     private final PinLockoutService pinLockoutService;
@@ -187,6 +190,12 @@ public class AttendanceServiceImpl implements AttendanceService {
     @Override
     @Transactional(readOnly = true)
     public List<KioskEmployeeDto> getKioskEmployees(Integer branchId) {
+        return getKioskEmployees(branchId, null, false, false);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<KioskEmployeeDto> getKioskEmployees(Integer branchId, Integer shiftId, Boolean onlyAssigned, Boolean excludeCashier) {
         List<User> users = userRepository.findAllByBranchIdAndStatus(branchId, UserStatus.ACTIVE);
         List<Attendance> openAttendances = attendanceRepository.findAllByBranchIdAndCheckOutTimeIsNull(branchId);
         Map<Integer, Attendance> openByUser = openAttendances.stream()
@@ -203,16 +212,49 @@ public class AttendanceServiceImpl implements AttendanceService {
                 .map(d -> d.isBefore(todayVN.minusDays(1)) ? d : todayVN.minusDays(1))
                 .orElse(todayVN.minusDays(1));
 
-        Map<Integer, List<Shift>> shiftsByUser = shiftAssignmentRepository
-                .findAttendanceRelevantByBranch(branchId, fromDate)
-                .stream()
+        List<ShiftAssignment> relevantAssignments = shiftAssignmentRepository.findAttendanceRelevantByBranch(branchId, fromDate);
+
+        Map<Integer, List<ShiftAssignment>> assignmentsByUser = relevantAssignments.stream()
+                .collect(Collectors.groupingBy(sa -> sa.getId().getEmployeeId()));
+
+        Map<Integer, List<Shift>> shiftsByUser = relevantAssignments.stream()
                 .collect(Collectors.groupingBy(
                         sa -> sa.getId().getEmployeeId(),
                         Collectors.mapping(ShiftAssignment::getShift, Collectors.toList())));
 
         Map<Integer, Instant> activePinLocks = pinLockoutService.findActiveEmployeeLocks(branchId);
 
+        Shift specifiedShift = shiftId != null ? shiftRepository.findById(shiftId).orElse(null) : null;
+        Integer activeCashierId = specifiedShift != null ? specifiedShift.getActiveCashierId() : null;
+        Map<Integer, ShiftAssignment> targetSaByEmployee = (shiftId != null && specifiedShift != null)
+                ? shiftAssignmentRepository.findByShiftIdWithEmployee(shiftId).stream()
+                        .collect(Collectors.toMap(sa -> sa.getId().getEmployeeId(), Function.identity(), (a, b) -> a))
+                : null;
+
         return users.stream()
+                .filter(u -> {
+                    // 1. Nếu excludeCashier: loại trừ người có base role là CASHIER
+                    if (Boolean.TRUE.equals(excludeCashier) && Roles.CASHIER.code().equals(u.roleCode())) {
+                        return false;
+                    }
+                    // Loại trừ active cashier của ca
+                    if (Boolean.TRUE.equals(excludeCashier) && activeCashierId != null && activeCashierId.equals(u.getId())) {
+                        return false;
+                    }
+                    // 2. Nếu chỉ định shiftId: nhân viên bắt buộc phải có phân công trong ca đó
+                    if (targetSaByEmployee != null) {
+                        ShiftAssignment targetSa = targetSaByEmployee.get(u.getId());
+                        if (targetSa == null) {
+                            return false;
+                        }
+                        // Nếu excludeCashier: kiểm tra role_in_shift có phải CASHIER không
+                        if (Boolean.TRUE.equals(excludeCashier)
+                                && Roles.CASHIER.code().equalsIgnoreCase(targetSa.getRoleInShift())) {
+                            return false;
+                        }
+                    }
+                    return true;
+                })
                 .map(u -> buildKioskDto(
                         u,
                         openByUser.get(u.getId()),
@@ -220,6 +262,8 @@ public class AttendanceServiceImpl implements AttendanceService {
                         activePinLocks.get(u.getId()),
                         now,
                         todayVN))
+                .filter(dto -> !Boolean.TRUE.equals(onlyAssigned) || dto.hasAssignedShift())
+                .filter(dto -> !Boolean.TRUE.equals(excludeCashier) || !Roles.CASHIER.code().equalsIgnoreCase(dto.role()))
                 .toList();
     }
 

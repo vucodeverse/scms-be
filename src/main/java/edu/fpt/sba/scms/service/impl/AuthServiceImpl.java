@@ -20,9 +20,16 @@ import edu.fpt.sba.scms.dto.response.CashierPinOptionDto;
 import edu.fpt.sba.scms.dto.response.CurrentUserResponse;
 import edu.fpt.sba.scms.dto.response.LoginResponse;
 import edu.fpt.sba.scms.dto.response.TokenResponse;
+import edu.fpt.sba.scms.common.enums.ShiftStatus;
+import edu.fpt.sba.scms.common.enums.ShiftType;
+import edu.fpt.sba.scms.domain.shift.ShiftSchedulePolicy;
 import edu.fpt.sba.scms.model.AuthToken;
+import edu.fpt.sba.scms.model.Shift;
+import edu.fpt.sba.scms.model.ShiftAssignment;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.BranchRepository;
+import edu.fpt.sba.scms.repository.ShiftAssignmentRepository;
+import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
 import edu.fpt.sba.scms.security.PermissionCatalog;
 import edu.fpt.sba.scms.security.jwt.JwtTokenProvider;
@@ -35,6 +42,7 @@ import edu.fpt.sba.scms.service.support.PinHasher;
 import edu.fpt.sba.scms.service.support.PinLockoutService;
 import edu.fpt.sba.scms.service.support.RefreshRateLimiter;
 import edu.fpt.sba.scms.service.support.RefreshTokenStore;
+import edu.fpt.sba.scms.common.util.DateTimeUtil;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -43,8 +51,15 @@ import org.springframework.util.StringUtils;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -69,6 +84,8 @@ public class AuthServiceImpl implements AuthService {
 
     private final UserRepository userRepository;
     private final BranchRepository branchRepository;
+    private final ShiftRepository shiftRepository;
+    private final ShiftAssignmentRepository shiftAssignmentRepository;
     private final PasswordEncoder passwordEncoder;
     private final PinHasher pinHasher;
     private final PinLockoutService pinLockoutService;
@@ -90,6 +107,8 @@ public class AuthServiceImpl implements AuthService {
 
     public AuthServiceImpl(UserRepository userRepository,
                            BranchRepository branchRepository,
+                           ShiftRepository shiftRepository,
+                           ShiftAssignmentRepository shiftAssignmentRepository,
                            PasswordEncoder passwordEncoder,
                            PinHasher pinHasher,
                            PinLockoutService pinLockoutService,
@@ -101,6 +120,8 @@ public class AuthServiceImpl implements AuthService {
                            AuditLogService auditLogService) {
         this.userRepository = userRepository;
         this.branchRepository = branchRepository;
+        this.shiftRepository = shiftRepository;
+        this.shiftAssignmentRepository = shiftAssignmentRepository;
         this.passwordEncoder = passwordEncoder;
         this.pinHasher = pinHasher;
         this.pinLockoutService = pinLockoutService;
@@ -143,12 +164,59 @@ public class AuthServiceImpl implements AuthService {
             throw new NotFoundException("chi nhánh");
         }
 
-        List<User> activeUsers = userRepository.findAllByBranchIdAndStatus(branchId, UserStatus.ACTIVE);
-        Map<Integer, Instant> activeLocks = pinLockoutService.findActiveEmployeeLocks(branchId);
-        Instant now = Instant.now();
+        Shift targetShift = findCurrentShift(branchId);
+        List<User> targetCashiers;
 
-        return activeUsers.stream()
-                .filter(u -> Roles.CASHIER.code().equals(u.roleCode()))
+        if (targetShift != null) {
+            List<ShiftAssignment> assignments = shiftAssignmentRepository.findByShiftIdWithEmployee(targetShift.getId());
+            Set<Integer> cashierUserIds = new LinkedHashSet<>();
+
+            for (ShiftAssignment sa : assignments) {
+                Integer empId = sa.getId() != null ? sa.getId().getEmployeeId() : null;
+                if (empId == null) continue;
+
+                String roleInShift = sa.getRoleInShift();
+                if (StringUtils.hasText(roleInShift)) {
+                    if (Roles.CASHIER.code().equalsIgnoreCase(roleInShift.trim())) {
+                        cashierUserIds.add(empId);
+                    }
+                } else {
+                    User emp = sa.getEmployee();
+                    if (emp != null && Roles.CASHIER.code().equalsIgnoreCase(emp.roleCode())) {
+                        cashierUserIds.add(empId);
+                    }
+                }
+            }
+
+            if (targetShift.getActiveCashierId() != null) {
+                cashierUserIds.add(targetShift.getActiveCashierId());
+            }
+
+            if (!cashierUserIds.isEmpty()) {
+                targetCashiers = cashierUserIds.stream()
+                        .map(id -> userRepository.findById(id).orElse(null))
+                        .filter(Objects::nonNull)
+                        .filter(User::isActive)
+                        .toList();
+            } else {
+                // Ca làm việc tại thời điểm này không có ai được phân công làm Thu ngân
+                return List.of();
+            }
+        } else {
+            // Không có ca nào tại thời điểm này -> dropdown chỉ hiển thị thu ngân tại thời điểm ca đó
+            if (shiftRepository.existsByBranchId(branchId)) {
+                return List.of();
+            }
+            // Fallback chỉ dành cho branch chưa từng tạo ca làm việc nào (môi trường test cô lập)
+            targetCashiers = userRepository.findAllByBranchIdAndStatus(branchId, UserStatus.ACTIVE).stream()
+                    .filter(u -> Roles.CASHIER.code().equals(u.roleCode()))
+                    .toList();
+        }
+
+        Instant now = Instant.now();
+        Map<Integer, Instant> activeLocks = pinLockoutService.findActiveEmployeeLocks(branchId);
+
+        return targetCashiers.stream()
                 .map(u -> {
                     Instant lockedUntil = activeLocks.get(u.getId());
                     boolean locked = lockedUntil != null && lockedUntil.isAfter(now);
@@ -181,18 +249,18 @@ public class AuthServiceImpl implements AuthService {
                 ? user.getUsername()
                 : "cashier-" + user.getId();
         IssuedToken access = tokenProvider.issueAccessToken(
-                user.getId(), subject, user.getFullName(), user.roleCode(), user.getBranchId());
+                user.getId(), subject, user.getFullName(), Roles.CASHIER.code(), user.getBranchId());
 
         auditLogService.log(AuditAction.LOGIN, ENTITY_USER, user.getId(), null,
-                Map.of("role", user.roleCode(), "method", "PIN", "branchId", branchId));
+                Map.of("role", Roles.CASHIER.code(), "method", "PIN", "branchId", branchId));
         log.info("Đăng nhập PIN thu ngân thành công: userId={}, branchId={}", user.getId(), branchId);
 
         return new LoginResponse(
                 access.token(),
                 tokenProvider.accessTtlSeconds(),
                 null,
-                toAuthUser(user),
-                Roles.landingFor(user.roleCode())
+                toAuthUser(user, Roles.CASHIER.code()),
+                Roles.landingFor(Roles.CASHIER.code())
         );
     }
 
@@ -226,8 +294,9 @@ public class AuthServiceImpl implements AuthService {
     public CurrentUserResponse me(UserPrincipal principal) {
         User user = userRepository.findWithRoleAndBranchById(principal.userId())
                 .orElseThrow(() -> new UnauthorizedException(ErrorCode.AUTH_REQUIRED));
-        return new CurrentUserResponse(user.getId(), user.getFullName(), user.getUsername(), user.roleCode(),
-                user.getBranchId(), branchName(user), PermissionCatalog.of(user.roleCode()));
+        String effectiveRole = principal.role() != null ? principal.role() : user.roleCode();
+        return new CurrentUserResponse(user.getId(), user.getFullName(), user.getUsername(), effectiveRole,
+                user.getBranchId(), branchName(user), PermissionCatalog.of(effectiveRole));
     }
 
     // ------------------------------------------------------------------ login
@@ -256,7 +325,7 @@ public class AuthServiceImpl implements AuthService {
             User user = userRepository.findWithRoleAndBranchById(employeeId)
                     .orElseThrow(() -> new NotFoundException("nhân viên"));
 
-            if (!Roles.CASHIER.code().equals(user.roleCode())) {
+            if (!isCashierAllowedForPinLogin(user, branchId)) {
                 throw new ForbiddenException(ErrorCode.ACCESS_DENIED,
                         "Chỉ tài khoản Thu ngân mới được phép mở khóa POS / kiểm két bằng PIN.");
             }
@@ -305,7 +374,7 @@ public class AuthServiceImpl implements AuthService {
             throw toPinFailureException(outcome);
         }
 
-        if (!Roles.CASHIER.code().equals(user.roleCode())) {
+        if (!isCashierAllowedForPinLogin(user, branchId)) {
             throw new ForbiddenException(ErrorCode.ACCESS_DENIED,
                     "Chỉ tài khoản Thu ngân mới được phép mở khóa POS / kiểm két bằng PIN.");
         }
@@ -313,6 +382,91 @@ public class AuthServiceImpl implements AuthService {
         pinLockoutService.onSuccess(branchId, user.getId());
         pinLockoutService.onSuccess(branchId, null);
         return user;
+    }
+
+    private boolean isCashierAllowedForPinLogin(User user, Integer branchId) {
+        if (Roles.CASHIER.code().equals(user.roleCode())) {
+            return true;
+        }
+        Shift targetShift = findCurrentShift(branchId);
+        if (targetShift != null) {
+            if (Objects.equals(targetShift.getActiveCashierId(), user.getId())) {
+                return true;
+            }
+            List<ShiftAssignment> assignments = shiftAssignmentRepository.findByShiftIdWithEmployee(targetShift.getId());
+            return assignments.stream()
+                    .anyMatch(sa -> Objects.equals(sa.getId().getEmployeeId(), user.getId())
+                            && Roles.CASHIER.code().equalsIgnoreCase(
+                                    StringUtils.hasText(sa.getRoleInShift()) ? sa.getRoleInShift().trim() : user.roleCode()));
+        }
+        return false;
+    }
+
+    private Shift findCurrentShift(Integer branchId) {
+        // 1. Ca đang OPEN luôn là ca hiện tại
+        Optional<Shift> openShiftOpt = shiftRepository
+                .findFirstByBranchIdAndStatusOrderByOpenedAtDesc(branchId, ShiftStatus.OPEN);
+        if (openShiftOpt.isPresent()) {
+            return openShiftOpt.get();
+        }
+
+        // 2. Tìm ca SCHEDULED của thời điểm hiện tại
+        Instant now = Instant.now();
+        LocalDate todayVN = DateTimeUtil.todayVN();
+        LocalTime localNow = LocalTime.now(DateTimeUtil.VN);
+
+        List<Shift> scheduledShifts = shiftRepository
+                .findByBranchIdAndShiftDateBetweenOrderByShiftDateAscPlannedStartAsc(
+                        branchId, todayVN.minusDays(1), todayVN.plusDays(1))
+                .stream()
+                .filter(s -> s.getStatus() == ShiftStatus.SCHEDULED)
+                .toList();
+
+        if (scheduledShifts.isEmpty()) {
+            return null;
+        }
+
+        // 2.1. Ưu tiên ca đang trong khung giờ [plannedStart - 60 phút, plannedEnd + 30 phút]
+        Duration startGrace = Duration.ofMinutes(60);
+        Duration endGrace = Duration.ofMinutes(30);
+        Optional<Shift> inWindow = scheduledShifts.stream()
+                .filter(s -> isWithinShiftWindow(s, now, startGrace, endGrace))
+                .min(Comparator.comparing(s -> Math.abs(Duration.between(
+                        s.getPlannedStart() != null ? s.getPlannedStart() : now, now).toMillis())));
+
+        if (inWindow.isPresent()) {
+            return inWindow.get();
+        }
+
+        // 2.2. Tìm ca hôm nay khớp loại ca theo thời điểm hiện tại
+        ShiftType inferredType = ShiftSchedulePolicy.inferShiftType(localNow);
+        LocalDate targetDate = (inferredType == ShiftType.NIGHT && localNow.isBefore(LocalTime.of(5, 0)))
+                ? todayVN.minusDays(1)
+                : todayVN;
+
+        Optional<Shift> matchingType = scheduledShifts.stream()
+                .filter(s -> (targetDate.equals(s.getShiftDate()) || todayVN.equals(s.getShiftDate()))
+                        && s.getShiftType() == inferredType)
+                .findFirst();
+
+        if (matchingType.isPresent()) {
+            return matchingType.get();
+        }
+
+        // 2.3. Ca SCHEDULED tiếp theo trong ngày hôm nay
+        return scheduledShifts.stream()
+                .filter(s -> todayVN.equals(s.getShiftDate()))
+                .min(Comparator.comparing(s -> s.getPlannedStart() != null ? s.getPlannedStart() : Instant.MAX))
+                .orElse(null);
+    }
+
+    private static boolean isWithinShiftWindow(Shift s, Instant now, Duration startGrace, Duration endGrace) {
+        if (s.getPlannedStart() == null || s.getPlannedEnd() == null) {
+            return false;
+        }
+        Instant start = s.getPlannedStart().minus(startGrace);
+        Instant end = s.getPlannedEnd().plus(endGrace);
+        return !now.isBefore(start) && !now.isAfter(end);
     }
 
     private static RuntimeException toPinFailureException(PinLockoutService.FailureOutcome outcome) {
@@ -405,7 +559,13 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private static AuthUserDto toAuthUser(User user) {
-        return new AuthUserDto(user.getId(), user.getFullName(), user.roleCode(), user.getBranchId(),
+        return toAuthUser(user, null);
+    }
+
+    private static AuthUserDto toAuthUser(User user, String effectiveRole) {
+        return new AuthUserDto(user.getId(), user.getFullName(),
+                effectiveRole != null ? effectiveRole : user.roleCode(),
+                user.getBranchId(),
                 branchName(user));
     }
 

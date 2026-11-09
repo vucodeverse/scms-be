@@ -21,6 +21,7 @@ import org.springframework.test.web.servlet.MvcResult;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Instant;
 import java.time.LocalTime;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -331,6 +332,76 @@ class AuthFlowIT {
                                 """.formatted(branch.getId(), cashierLockTarget.getId())))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("PIN_LOCKED"));
+    }
+
+    @Autowired
+    private edu.fpt.sba.scms.repository.ShiftRepository shiftRepository;
+
+    @Autowired
+    private edu.fpt.sba.scms.repository.ShiftAssignmentRepository shiftAssignmentRepository;
+
+    @Test
+    void temporaryCashierRoleInShiftIsListedAndCanPinLogin() throws Exception {
+        Branch branch = branchRepository.save(Branch.builder()
+                .code("BR_TEMP")
+                .name("Chi nhánh Gán Role Tạm")
+                .status(BranchStatus.OPEN)
+                .build());
+
+        Role baristaRole = roleRepository.findByCode("BARISTA").orElseThrow();
+        User barista = userRepository.save(User.builder()
+                .branchId(branch.getId())
+                .roleId(baristaRole.getId())
+                .fullName("Pha chế kiêm Thu ngân")
+                .pinHash(pinHasher.hash("5555"))
+                .pinLookupHash(pinHasher.lookupHash(branch.getId(), "5555"))
+                .position(Roles.BARISTA)
+                .status(UserStatus.ACTIVE)
+                .build());
+
+        // Tạo ca làm việc và gán Barista làm Thu ngân trong ca này (role_in_shift = CASHIER)
+        Instant now = Instant.now();
+        edu.fpt.sba.scms.model.Shift shift = shiftRepository.save(edu.fpt.sba.scms.model.Shift.builder()
+                .branchId(branch.getId())
+                .shiftDate(edu.fpt.sba.scms.common.util.DateTimeUtil.todayVN())
+                .shiftType(edu.fpt.sba.scms.common.enums.ShiftType.MORNING)
+                .plannedStart(now.minusSeconds(1800))
+                .plannedEnd(now.plusSeconds(18000))
+                .status(edu.fpt.sba.scms.common.enums.ShiftStatus.OPEN)
+                .openedAt(now.minusSeconds(1800))
+                .build());
+
+        shiftAssignmentRepository.save(edu.fpt.sba.scms.model.ShiftAssignment.builder()
+                .id(new edu.fpt.sba.scms.model.ShiftAssignmentId(shift.getId(), barista.getId()))
+                .shift(shift)
+                .employee(barista)
+                .roleInShift("CASHIER")
+                .build());
+
+        // 1. Kiểm tra /auth/cashiers trả về nhân viên Barista được gán role tạm CASHIER trong ca này
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + branch.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].employeeId", hasItem(barista.getId())))
+                .andExpect(jsonPath("$.data[*].fullName", hasItem("Pha chế kiêm Thu ngân")));
+
+        // 2. Barista đăng nhập bằng mã PIN 5555 thành công với vai trò CASHIER
+        MvcResult res = mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"5555"}
+                                """.formatted(branch.getId(), barista.getId())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.user.role").value("CASHIER"))
+                .andReturn();
+
+        JsonNode json = objectMapper.readTree(res.getResponse().getContentAsString());
+        String token = json.at("/data/accessToken").asText();
+
+        // 3. /auth/me nhận diện quyền Thu ngân trong phiên này
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.role").value("CASHIER"))
+                .andExpect(jsonPath("$.data.permissions", hasItem("SHIFT_OPEN")));
     }
 
     @Test

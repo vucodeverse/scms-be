@@ -1482,7 +1482,7 @@ public class ShiftServiceImpl implements ShiftService {
                         .id(assignmentId)
                         .shift(savedShift)
                         .employee(cashier)
-                        .roleInShift(cashier.roleCode())
+                        .roleInShift(Roles.CASHIER.code())
                         .build();
                 shiftAssignmentRepository.save(sa);
             } else {

@@ -47,4 +47,6 @@ public interface ShiftRepository extends JpaRepository<Shift, Integer>, JpaSpeci
             Integer branchId, LocalDate startDate, LocalDate endDate);
 
     Page<Shift> findByBranchIdOrderByShiftDateDescPlannedStartDesc(Integer branchId, Pageable pageable);
+
+    boolean existsByBranchId(Integer branchId);
 }

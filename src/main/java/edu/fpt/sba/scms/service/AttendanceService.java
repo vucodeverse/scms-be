@@ -24,6 +24,9 @@ public interface AttendanceService {
     /** Lấy danh sách nhân viên chi nhánh hiển thị trên màn hình chọn Kiosk. */
     List<KioskEmployeeDto> getKioskEmployees(Integer branchId);
 
+    /** Lấy danh sách nhân viên chi nhánh có lọc theo ca, loại trừ thu ngân và chỉ lấy nhân viên có ca. */
+    List<KioskEmployeeDto> getKioskEmployees(Integer branchId, Integer shiftId, Boolean onlyAssigned, Boolean excludeCashier);
+
     /** Xem trạng thái chấm công hiện tại của nhân viên. */
     AttendanceResultDto getCurrentStatus(Integer employeeId);
 }
