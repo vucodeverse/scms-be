@@ -32,7 +32,16 @@ public record AppProperties(
          * Bắt buộc ≥ 16 ký tự; {@code PinConfig} fail-fast khi khởi động nếu thiếu.
          */
         @ConfigurationProperties(prefix = "app.kiosk")
-        public record Kiosk(@NotBlank @Size(min = 16) String pinPepper) {
+        public record Kiosk(@NotBlank @Size(min = 16) String pinPepper,
+                            @Min(1) Integer pinMaxFailures,
+                            @Min(1) Integer pinFailureWindowMin,
+                            @Min(1) Integer pinLockMin) {
+
+            public Kiosk {
+                pinMaxFailures = pinMaxFailures == null ? 3 : pinMaxFailures;
+                pinFailureWindowMin = pinFailureWindowMin == null ? 15 : pinFailureWindowMin;
+                pinLockMin = pinLockMin == null ? 15 : pinLockMin;
+            }
 
             @Override
             public String toString() {

@@ -20,9 +20,8 @@ public record CashAdjustmentRequest(
         @Size(max = 500, message = "Lý do tối đa 500 ký tự")
         String reason,
 
-        @Schema(description = "Mã PIN của Quản lý chi nhánh xác thực (Quy tắc 2 người duyệt BR-32)", example = "123456")
-        @NotBlank(message = "Mã PIN Quản lý chi nhánh là bắt buộc")
+        @Schema(description = "Mã PIN của Quản lý chi nhánh xác thực (tùy chọn khi chính Quản lý hoặc COO đang đăng nhập trực tiếp)", example = "123456")
+        @Size(max = 10, message = "Mã PIN tối đa 10 ký tự")
         String managerPin
 ) {
 }
-

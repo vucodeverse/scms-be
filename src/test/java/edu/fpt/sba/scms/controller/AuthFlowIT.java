@@ -1,7 +1,15 @@
 package edu.fpt.sba.scms.controller;
 
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
+import edu.fpt.sba.scms.common.enums.BranchStatus;
+import edu.fpt.sba.scms.common.enums.Roles;
+import edu.fpt.sba.scms.common.enums.UserStatus;
+import edu.fpt.sba.scms.model.Branch;
+import edu.fpt.sba.scms.model.Role;
+import edu.fpt.sba.scms.model.User;
+import edu.fpt.sba.scms.repository.BranchRepository;
+import edu.fpt.sba.scms.repository.RoleRepository;
+import edu.fpt.sba.scms.repository.UserRepository;
+import edu.fpt.sba.scms.service.support.PinHasher;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -10,8 +18,15 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+
+import java.time.LocalTime;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -19,18 +34,32 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * UC01 — luồng login -> me -> refresh -> logout trên H2, qua toàn bộ filter chain + envelope.
+ * UC01 — luồng login -> me -> refresh -> logout -> pin-login trên H2, qua toàn bộ filter chain + envelope.
  */
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class AuthFlowIT {
 
+    private static final AtomicInteger SEQ = new AtomicInteger(900);
+
     @Autowired
     private MockMvc mockMvc;
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private BranchRepository branchRepository;
+
+    @Autowired
+    private RoleRepository roleRepository;
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private PinHasher pinHasher;
 
     private String login(String username, String password, boolean rememberMe) throws Exception {
         MvcResult result = mockMvc.perform(post("/api/v1/auth/login")
@@ -170,6 +199,138 @@ class AuthFlowIT {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"refreshToken\":\"" + refresh + "\"}"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void cashierPinLoginListsOnlyActiveCashiersIssuesTokenAndEnforcesLockoutAndRoleGuard() throws Exception {
+        int seq = SEQ.incrementAndGet();
+        Branch branch = branchRepository.save(Branch.builder()
+                .code("PIN_" + seq)
+                .name("Chi nhánh PIN Auth " + seq)
+                .openingTime(LocalTime.of(7, 0))
+                .closingTime(LocalTime.of(22, 0))
+                .status(BranchStatus.OPEN)
+                .build());
+        Branch otherBranch = branchRepository.save(Branch.builder()
+                .code("PINO_" + seq)
+                .name("Chi nhánh PIN Khác " + seq)
+                .openingTime(LocalTime.of(7, 0))
+                .closingTime(LocalTime.of(22, 0))
+                .status(BranchStatus.OPEN)
+                .build());
+
+        Role cashierRole = roleRepository.findByCode(Roles.CASHIER.code())
+                .orElseGet(() -> roleRepository.save(Role.builder().code(Roles.CASHIER.code()).name("Thu ngân").build()));
+        Role baristaRole = roleRepository.findByCode(Roles.BARISTA.code())
+                .orElseGet(() -> roleRepository.save(Role.builder().code(Roles.BARISTA.code()).name("Pha chế").build()));
+
+        // Thu ngân PIN-only (username & passwordHash đều null)
+        User cashierOk = userRepository.save(User.builder()
+                .branchId(branch.getId())
+                .roleId(cashierRole.getId())
+                .fullName("Thu ngân PIN " + seq)
+                .pinHash(pinHasher.hash("2468"))
+                .pinLookupHash(pinHasher.lookupHash(branch.getId(), "2468"))
+                .position(Roles.CASHIER)
+                .status(UserStatus.ACTIVE)
+                .build());
+
+        // Thu ngân khóa do sai PIN ở test này
+        User cashierLockTarget = userRepository.save(User.builder()
+                .branchId(branch.getId())
+                .roleId(cashierRole.getId())
+                .fullName("Thu ngân Lock " + seq)
+                .pinHash(pinHasher.hash("1357"))
+                .pinLookupHash(pinHasher.lookupHash(branch.getId(), "1357"))
+                .position(Roles.CASHIER)
+                .status(UserStatus.ACTIVE)
+                .build());
+
+        // Pha chế (không phải CASHIER -> không được xuất hiện và bị 403 nếu cố pin-login)
+        User barista = userRepository.save(User.builder()
+                .branchId(branch.getId())
+                .roleId(baristaRole.getId())
+                .fullName("Pha chế PIN " + seq)
+                .pinHash(pinHasher.hash("9991"))
+                .pinLookupHash(pinHasher.lookupHash(branch.getId(), "9991"))
+                .position(Roles.BARISTA)
+                .status(UserStatus.ACTIVE)
+                .build());
+
+        // 1. Public list cashiers chỉ trả 2 Cashier ACTIVE của chi nhánh
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + branch.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(2)))
+                .andExpect(jsonPath("$.data[*].employeeId", hasItem(cashierOk.getId())))
+                .andExpect(jsonPath("$.data[*].hasPin", hasItem(true)));
+
+        // 2. Cashier PIN-only login thành công -> nhận JWT, refreshToken = null, gọi /me bình thường
+        MvcResult pinLoginRes = mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"2468"}
+                                """.formatted(branch.getId(), cashierOk.getId())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.user.role").value("CASHIER"))
+                .andExpect(jsonPath("$.data.user.branchId").value(branch.getId()))
+                .andExpect(jsonPath("$.data.landing").value("SCR-04"))
+                .andReturn();
+        JsonNode pinJson = objectMapper.readTree(pinLoginRes.getResponse().getContentAsString());
+        assertThat(pinJson.at("/data/refreshToken").isNull() || pinJson.at("/data/refreshToken").isMissingNode()).isTrue();
+        String cashierAccessToken = pinJson.at("/data/accessToken").asText();
+
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + cashierAccessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.role").value("CASHIER"))
+                .andExpect(jsonPath("$.data.branchId").value(branch.getId()))
+                .andExpect(jsonPath("$.data.permissions", hasItem("SHIFT_OPEN")))
+                .andExpect(jsonPath("$.data.permissions", org.hamcrest.Matchers.not(hasItem("CASH_IN_OUT"))));
+
+        // 3. Nhân viên không phải CASHIER -> 403 ACCESS_DENIED
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"9991"}
+                                """.formatted(branch.getId(), barista.getId())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        // 4. Chọn Cashier khác chi nhánh -> 403 CROSS_BRANCH_DENIED
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"2468"}
+                                """.formatted(otherBranch.getId(), cashierOk.getId())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("CROSS_BRANCH_DENIED"));
+
+        // 5. Nhập sai PIN 3 lần -> 401 PIN_LOCKED + Retry-After, sau đó nhập PIN đúng vẫn bị PIN_LOCKED
+        for (int i = 0; i < 2; i++) {
+            mockMvc.perform(post("/api/v1/auth/pin-login")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"branchId":%d,"employeeId":%d,"pin":"000%d"}
+                                    """.formatted(branch.getId(), cashierLockTarget.getId(), i)))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.code").value("INVALID_PIN"));
+        }
+
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"9999"}
+                                """.formatted(branch.getId(), cashierLockTarget.getId())))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().exists("Retry-After"))
+                .andExpect(jsonPath("$.code").value("PIN_LOCKED"));
+
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"1357"}
+                                """.formatted(branch.getId(), cashierLockTarget.getId())))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("PIN_LOCKED"));
     }
 
     @Test

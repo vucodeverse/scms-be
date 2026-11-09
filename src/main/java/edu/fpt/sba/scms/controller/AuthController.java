@@ -2,16 +2,18 @@ package edu.fpt.sba.scms.controller;
 
 import edu.fpt.sba.scms.dto.ApiErrorResponse;
 import edu.fpt.sba.scms.dto.request.LoginRequest;
+import edu.fpt.sba.scms.dto.request.PinLoginRequest;
+import edu.fpt.sba.scms.dto.request.RefreshRequest;
 import edu.fpt.sba.scms.dto.request.RefreshTokenRequest;
+import edu.fpt.sba.scms.dto.response.CashierPinOptionDto;
 import edu.fpt.sba.scms.dto.response.CurrentUserResponse;
 import edu.fpt.sba.scms.dto.response.LoginResponse;
 import edu.fpt.sba.scms.dto.response.MessageResponse;
 import edu.fpt.sba.scms.dto.response.TokenResponse;
 import edu.fpt.sba.scms.security.principal.UserPrincipal;
 import edu.fpt.sba.scms.security.util.ClientIpResolver;
-import edu.fpt.sba.scms.service.AuthService;
-import edu.fpt.sba.scms.dto.request.RefreshRequest;
 import edu.fpt.sba.scms.security.web.RefreshCookieSupport;
+import edu.fpt.sba.scms.service.AuthService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -23,13 +25,15 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 
 /**
@@ -69,6 +73,29 @@ public class AuthController {
                     result.landing());
         }
         return result;
+    }
+
+    @Operation(summary = "Danh sách Thu ngân mở khóa PIN theo chi nhánh",
+            description = "Public endpoint cho màn POS / Kiểm két liệt kê thu ngân đang hoạt động của chi nhánh.")
+    @GetMapping("/cashiers")
+    public List<CashierPinOptionDto> listCashierPinOptions(@RequestParam Integer branchId) {
+        return authService.listCashierPinOptions(branchId);
+    }
+
+    @Operation(summary = "Đăng nhập Thu ngân bằng mã PIN",
+            description = "Xác thực thu ngân bằng PIN 4-6 số tại chi nhánh; sai 3 lần tạm khóa 15 phút (PIN_LOCKED).")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Mở khóa Thu ngân thành công"),
+            @ApiResponse(responseCode = "400", description = "VALIDATION_ERROR",
+                    content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "401", description = "INVALID_PIN | PIN_LOCKED | ACCOUNT_INACTIVE",
+                    content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "403", description = "ACCESS_DENIED | CROSS_BRANCH_DENIED",
+                    content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
+    @PostMapping("/pin-login")
+    public LoginResponse pinLogin(@RequestBody @Valid PinLoginRequest request,
+                                  HttpServletRequest httpRequest) {
+        return authService.pinLogin(request, clientIp.of(httpRequest));
     }
 
     @Operation(summary = "Làm mới access token",

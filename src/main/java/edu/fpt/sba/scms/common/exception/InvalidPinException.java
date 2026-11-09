@@ -8,4 +8,8 @@ public class InvalidPinException extends UnauthorizedException {
     public InvalidPinException() {
         super(ErrorCode.INVALID_PIN);
     }
+
+    public InvalidPinException(String message) {
+        super(ErrorCode.INVALID_PIN, message);
+    }
 }

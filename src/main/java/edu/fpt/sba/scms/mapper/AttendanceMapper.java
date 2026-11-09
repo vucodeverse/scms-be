@@ -41,5 +41,17 @@ public interface AttendanceMapper {
     @Mapping(target = "fullName", expression = "java(user.getFullName())")
     @Mapping(target = "role", expression = "java(user.roleCode())")
     @Mapping(target = "isCheckedIn", source = "isCheckedIn")
-    KioskEmployeeDto toKioskDto(User user, boolean isCheckedIn);
+    @Mapping(target = "hasAssignedShift", source = "hasAssignedShift")
+    @Mapping(target = "shiftLabel", source = "shiftLabel")
+    @Mapping(target = "shiftStatus", source = "shiftStatus")
+    @Mapping(target = "pinLocked", source = "pinLocked")
+    @Mapping(target = "pinLockedUntil", source = "pinLockedUntil")
+    KioskEmployeeDto toKioskDto(
+            User user,
+            boolean isCheckedIn,
+            boolean hasAssignedShift,
+            String shiftLabel,
+            String shiftStatus,
+            boolean pinLocked,
+            java.time.Instant pinLockedUntil);
 }

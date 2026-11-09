@@ -80,6 +80,26 @@ public final class ShiftCashCalculator {
     }
 
     /**
+     * Tính chênh lệch tiền mặt đầu ca so với tiền kết của ca đóng trước đó:
+     * openingVariance = openingCash - previousClosingCash
+     */
+    public static BigDecimal calculateOpeningVariance(BigDecimal openingCash, BigDecimal previousClosingCash) {
+        BigDecimal opening = openingCash != null ? openingCash : BigDecimal.ZERO;
+        BigDecimal previous = previousClosingCash != null ? previousClosingCash : BigDecimal.ZERO;
+        return opening.subtract(previous);
+    }
+
+    /**
+     * Kiểm tra tiền mặt đầu ca có lệch so với kết ca trước hay không (openingVariance != 0).
+     */
+    public static boolean hasOpeningDiscrepancy(BigDecimal openingCash, BigDecimal previousClosingCash) {
+        if (previousClosingCash == null) {
+            return false;
+        }
+        return calculateOpeningVariance(openingCash, previousClosingCash).compareTo(BigDecimal.ZERO) != 0;
+    }
+
+    /**
      * Kiểm tra số dư két tiền có đủ để rút hoặc hoàn tiền hay không:
      * availableCash >= amountToWithdraw (BR-34).
      */

@@ -21,6 +21,12 @@ public interface ShiftRepository extends JpaRepository<Shift, Integer>, JpaSpeci
 
     Optional<Shift> findFirstByBranchIdAndStatusOrderByOpenedAtDesc(Integer branchId, ShiftStatus status);
 
+    Optional<Shift> findFirstByBranchIdAndStatusOrderByClosedAtDescIdDesc(Integer branchId, ShiftStatus status);
+
+    List<Shift> findByStatus(ShiftStatus status);
+
+    List<Shift> findByStatusOrderByClosedAtDescIdDesc(ShiftStatus status);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT s FROM Shift s WHERE s.id = :id")
     Optional<Shift> findByIdForUpdate(@Param("id") Integer id);

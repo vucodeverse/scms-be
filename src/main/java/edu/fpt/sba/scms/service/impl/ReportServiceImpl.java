@@ -250,7 +250,7 @@ public class ReportServiceImpl implements ReportService {
             return List.of();
         }
         return salesRepository.findRecipeCosts(productIds).stream()
-                .map(r -> new RecipeCostLine(((Number) r[0]).intValue(), (String) r[1], toDecimal(r[3]),
+                .map(r -> new RecipeCostLine(((Number) r[0]).intValue(), r[1] != null ? r[1].toString() : null, toDecimal(r[3]),
                         toDecimal(r[4])))
                 .toList();
     }

@@ -45,6 +45,22 @@ class ShiftCashCalculatorTest {
     }
 
     @Test
+    @DisplayName("calculateOpeningVariance & hasOpeningDiscrepancy: Đối soát tiền đầu ca với kết ca trước")
+    void openingVariance_detectsHandoverDiscrepancy() {
+        assertEquals(BigDecimal.valueOf(-30000),
+                ShiftCashCalculator.calculateOpeningVariance(BigDecimal.valueOf(970000), BigDecimal.valueOf(1000000)));
+        assertEquals(BigDecimal.valueOf(20000),
+                ShiftCashCalculator.calculateOpeningVariance(BigDecimal.valueOf(1020000), BigDecimal.valueOf(1000000)));
+        assertEquals(BigDecimal.ZERO,
+                ShiftCashCalculator.calculateOpeningVariance(BigDecimal.valueOf(1000000), BigDecimal.valueOf(1000000)));
+
+        assertTrue(ShiftCashCalculator.hasOpeningDiscrepancy(BigDecimal.valueOf(970000), BigDecimal.valueOf(1000000)));
+        assertTrue(ShiftCashCalculator.hasOpeningDiscrepancy(BigDecimal.valueOf(1020000), BigDecimal.valueOf(1000000)));
+        assertFalse(ShiftCashCalculator.hasOpeningDiscrepancy(BigDecimal.valueOf(1000000), BigDecimal.valueOf(1000000)));
+        assertFalse(ShiftCashCalculator.hasOpeningDiscrepancy(BigDecimal.valueOf(1000000), null));
+    }
+
+    @Test
     @DisplayName("isSufficientCash: Kiểm tra số dư két có đủ để rút hoặc hoàn tiền (BR-34)")
     void isSufficientCash_checksSufficiency() {
         assertTrue(ShiftCashCalculator.isSufficientCash(BigDecimal.valueOf(500000), BigDecimal.valueOf(300000)));

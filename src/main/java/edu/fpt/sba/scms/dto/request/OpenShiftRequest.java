@@ -3,6 +3,7 @@ package edu.fpt.sba.scms.dto.request;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
 
@@ -20,8 +21,8 @@ public record OpenShiftRequest(
         @Schema(description = "ID ca đã lên lịch sẵn (nếu có)", example = "1")
         Integer scheduledShiftId,
 
-        @Schema(description = "Ghi chú mở ca", example = "Mở ca sáng đầu ngày")
+        @Schema(description = "Ghi chú mở ca / giải trình chênh lệch đầu ca", example = "Mở ca sáng đầu ngày")
+        @Size(max = 500, message = "Ghi chú mở ca tối đa 500 ký tự")
         String note
 ) {
 }
-

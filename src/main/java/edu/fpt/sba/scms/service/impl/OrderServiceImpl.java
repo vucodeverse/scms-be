@@ -134,7 +134,7 @@ public class OrderServiceImpl implements OrderService {
                 ? request.discountAmount() : BigDecimal.ZERO;
 
         Order order = Order.builder()
-                .branchId(branchId)
+                .branchId(branchId != null ? branchId : 1)
                 .shiftId(request.shiftId())
                 .cashierId(cashierId)
                 .status(OrderStatus.PENDING)

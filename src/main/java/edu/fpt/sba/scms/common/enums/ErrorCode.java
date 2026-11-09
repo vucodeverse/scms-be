@@ -24,6 +24,7 @@ public enum ErrorCode {
     ACCOUNT_LOCKED("Tài khoản tạm khóa do đăng nhập sai quá nhiều lần.", HttpStatus.UNAUTHORIZED),
     ACCOUNT_INACTIVE("Tài khoản đã bị vô hiệu hoá.", HttpStatus.UNAUTHORIZED),
     INVALID_PIN("Mã PIN không đúng.", HttpStatus.UNAUTHORIZED),
+    PIN_LOCKED("Mã PIN tạm khóa do nhập sai quá nhiều lần.", HttpStatus.UNAUTHORIZED),
     INVALID_KIOSK_KEY("Kiosk key không hợp lệ.", HttpStatus.UNAUTHORIZED),
 
     // ---- 403 ----

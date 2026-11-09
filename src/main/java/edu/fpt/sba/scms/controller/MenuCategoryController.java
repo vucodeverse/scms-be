@@ -50,7 +50,7 @@ public class MenuCategoryController {
             description = "Mặc định 10 phần tử/trang; lọc theo keyword (mã/tên) và status; sortBy: sortOrder|code|name|createdAt.")
     @ApiResponse(responseCode = "200", description = "OK")
     @GetMapping
-    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER')")
+    @PreAuthorize("permitAll()")
     public PageResponse<CategoryDto> list(@ModelAttribute @Valid CategoryListQuery query) {
         return PageResponse.of(categoryService.list(query));
     }

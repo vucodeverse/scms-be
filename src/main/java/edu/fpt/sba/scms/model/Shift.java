@@ -101,6 +101,18 @@ public class Shift {
     @Column(name = "discrepancy_reason", length = 500)
     private String discrepancyReason;
 
+    @Column(name = "previous_shift_id")
+    private Integer previousShiftId;
+
+    @Column(name = "previous_closing_cash", precision = 19, scale = 2)
+    private BigDecimal previousClosingCash;
+
+    @Column(name = "opening_variance", precision = 19, scale = 2)
+    private BigDecimal openingVariance;
+
+    @Column(name = "opening_note", length = 500)
+    private String openingNote;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     private ShiftStatus status;

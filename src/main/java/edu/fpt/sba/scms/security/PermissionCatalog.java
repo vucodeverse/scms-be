@@ -39,11 +39,13 @@ public final class PermissionCatalog {
         Map<Roles, List<String>> map = new EnumMap<>(Roles.class);
         map.put(Roles.COO, List.of("BRANCH_MANAGE", "MANAGER_MANAGE", "ROLE_ASSIGN", "MENU_MANAGE", "VOUCHER_MANAGE",
                 "SYNC_PUBLISH", "REPORT_VIEW", "SETTINGS_MANAGE", "PAYROLL_APPROVE", "AUDIT_VIEW",
-                "REFUND_APPROVE", "ORDER_VIEW"));
+                "REFUND_APPROVE", "ORDER_VIEW", "SHIFT_MANAGE", "SHIFT_OPEN", "SHIFT_CLOSE", "CASH_IN_OUT",
+                "CASH_APPROVE"));
         map.put(Roles.BRANCH_MANAGER, List.of("EMPLOYEE_MANAGE", "SCHEDULE_MANAGE", "ATTENDANCE_ADJUST",
                 "INVENTORY_MANAGE", "STOCK_APPROVE", "CASH_APPROVE", "REFUND_REQUEST", "REFUND_APPROVE",
-                "REPORT_VIEW", "PAYROLL_MANAGE", "ORDER_VIEW", "SHIFT_MANAGE"));
-        map.put(Roles.CASHIER, List.of("POS_OPERATE", "SHIFT_OPEN", "SHIFT_CLOSE", "CASH_IN_OUT", "REFUND_REQUEST",
+                "REPORT_VIEW", "PAYROLL_MANAGE", "ORDER_VIEW", "SHIFT_MANAGE", "SHIFT_OPEN", "SHIFT_CLOSE",
+                "CASH_IN_OUT"));
+        map.put(Roles.CASHIER, List.of("POS_OPERATE", "SHIFT_OPEN", "SHIFT_CLOSE", "REFUND_REQUEST",
                 "ORDER_VIEW"));
         // Barista/Waiter chấm công qua Kiosk như nhân viên ca.
         List<String> staff = List.of("KIOSK_ATTENDANCE");

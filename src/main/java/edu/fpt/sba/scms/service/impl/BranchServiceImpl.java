@@ -5,11 +5,13 @@ import edu.fpt.sba.scms.common.enums.AuditAction;
 import edu.fpt.sba.scms.common.enums.BranchStatus;
 import edu.fpt.sba.scms.common.enums.BusinessErrorCode;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
+import edu.fpt.sba.scms.common.enums.Roles;
 import edu.fpt.sba.scms.common.enums.UserStatus;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
 import edu.fpt.sba.scms.common.exception.ConflictException;
 import edu.fpt.sba.scms.common.exception.InvalidFieldValueException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
+import edu.fpt.sba.scms.dto.request.AssignBranchManagerRequest;
 import edu.fpt.sba.scms.dto.request.CreateBranchRequest;
 import edu.fpt.sba.scms.dto.request.SaveBranchRequest;
 import edu.fpt.sba.scms.dto.request.SaveBranchStatusRequest;
@@ -27,6 +29,7 @@ import edu.fpt.sba.scms.repository.UserRepository;
 import edu.fpt.sba.scms.service.BranchService;
 import edu.fpt.sba.scms.service.support.MasterDataQueries;
 import edu.fpt.sba.scms.service.support.MasterDataText;
+import edu.fpt.sba.scms.service.support.RefreshTokenStore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -35,8 +38,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /** UC05 — Manage Branches (IMPLEMENTATION.md §10.3). BR-13: không xoá cứng, chỉ ngừng hoạt động. */
 @Slf4j
@@ -57,6 +62,7 @@ public class BranchServiceImpl implements BranchService {
     private final UserRepository userRepository;
     private final BranchMapper branchMapper;
     private final UserMapper userMapper;
+    private final RefreshTokenStore refreshTokenStore;
     private final AuditLogService auditLogService;
 
     @Override
@@ -75,11 +81,13 @@ public class BranchServiceImpl implements BranchService {
         List<UserDto> employees = userRepository.findAllByBranchIdAndStatus(id, UserStatus.ACTIVE).stream()
                 .map(user -> userMapper.toDto(user, roleCodeOf(user), branch.getName(), null))
                 .toList();
-        return branchMapper.toDetail(branch, managerName(branch), employees.size(), employees);
+        User manager = resolveActiveManager(branch);
+        return branchMapper.toDetail(branch, manager == null ? null : manager.getId(),
+                manager == null ? null : manager.getFullName(), employees.size(), employees);
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public BranchDto create(CreateBranchRequest request) {
         ensureTimesValid(request.openingTime(), request.closingTime());
         if (branchRepository.existsByCode(request.code())) {
@@ -98,14 +106,21 @@ public class BranchServiceImpl implements BranchService {
                 .status(request.status())
                 .build();
         branchRepository.save(branch);
+        if (request.managerUserId() != null) {
+            applyManagerAssignment(branch, request.managerUserId());
+        }
         audit(AuditAction.BRANCH_CREATE, branch.getId(), null, snapshot(branch));
+        if (request.managerUserId() != null) {
+            audit(AuditAction.MANAGER_REASSIGN, branch.getId(),
+                    Map.of("managerId", "null"), snapshot(branch));
+        }
         return toDto(branch);
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public BranchDto update(Integer id, SaveBranchRequest request) {
-        Branch branch = get(id);
+        Branch branch = lock(id);
         ensureTimesValid(request.openingTime(), request.closingTime());
         // code read-only (đặc tả §10.3): không nhận từ body dù client có gửi.
         Object before = snapshot(branch);
@@ -121,39 +136,139 @@ public class BranchServiceImpl implements BranchService {
         if (closing) {
             ensureNoActiveStaff(branch);
         }
+        boolean becomingInactive = request.status() == BranchStatus.INACTIVE
+                && branch.getStatus() != BranchStatus.INACTIVE;
         branch.setStatus(request.status());
-        branchRepository.save(branch);
+        if (becomingInactive) {
+            applyManagerAssignment(branch, null);
+        } else {
+            branchRepository.save(branch);
+        }
         audit(AuditAction.BRANCH_UPDATE, branch.getId(), before, snapshot(branch));
         return toDto(branch);
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
+    public BranchDto assignManager(Integer id, AssignBranchManagerRequest request) {
+        Branch branch = lock(id);
+        Object before = snapshot(branch);
+        boolean changed = applyManagerAssignment(branch, request == null ? null : request.managerUserId());
+        if (changed) {
+            audit(AuditAction.MANAGER_REASSIGN, branch.getId(), before, snapshot(branch));
+        }
+        return toDto(branch);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public BranchDto changeStatus(Integer id, SaveBranchStatusRequest request) {
-        Branch branch = get(id);
+        Branch branch = lock(id);
         Object before = snapshot(branch);
         if (request.status() != BranchStatus.OPEN && branch.getStatus() == BranchStatus.OPEN) {
             ensureNoActiveStaff(branch);
         }
+        boolean becomingInactive = request.status() == BranchStatus.INACTIVE
+                && branch.getStatus() != BranchStatus.INACTIVE;
         branch.setStatus(request.status());
-        branchRepository.save(branch);
+        if (becomingInactive) {
+            applyManagerAssignment(branch, null);
+        } else {
+            branchRepository.save(branch);
+        }
         audit(AuditAction.BRANCH_STATUS, branch.getId(), before, snapshot(branch));
         return toDto(branch);
     }
 
     @Override
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public BranchDto softDelete(Integer id) {
-        Branch branch = get(id);
+        Branch branch = lock(id);
         Object before = snapshot(branch);
         ensureNoActiveStaff(branch);
         branch.setStatus(BranchStatus.INACTIVE);
-        branchRepository.save(branch);
+        applyManagerAssignment(branch, null);
         audit(AuditAction.BRANCH_STATUS, branch.getId(), before, snapshot(branch));
         return toDto(branch);
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * Đồng bộ hai chiều {@code branch.managerId} ↔ {@code user.branchId} theo quy tắc 1 chi nhánh - 1 quản lý chính.
+     * Chỉ chấp nhận tài khoản {@code BRANCH_MANAGER} đang {@code ACTIVE} và chưa phụ trách chi nhánh nào khác.
+     */
+    private boolean applyManagerAssignment(Branch branch, Integer targetManagerId) {
+        User target = targetManagerId == null ? null : loadAssignableManager(targetManagerId, branch);
+        boolean unassignChanged = detachOtherManagers(branch, targetManagerId);
+
+        if (target == null) {
+            boolean cleared = branch.getManagerId() != null || unassignChanged;
+            branch.setManagerId(null);
+            branchRepository.save(branch);
+            return cleared;
+        }
+
+        boolean changed = !Objects.equals(branch.getManagerId(), target.getId())
+                || !Objects.equals(target.getBranchId(), branch.getId())
+                || unassignChanged;
+        if (!Objects.equals(target.getBranchId(), branch.getId())) {
+            target.setBranchId(branch.getId());
+            userRepository.save(target);
+            // JWT mang claim `bid`: thu hồi refresh token để lần đăng nhập/refresh sau nhận đúng branchId.
+            refreshTokenStore.revokeAllOfUser(target.getId());
+        }
+        branch.setManagerId(target.getId());
+        branchRepository.save(branch);
+        return changed;
+    }
+
+    private User loadAssignableManager(Integer targetManagerId, Branch branch) {
+        if (branch.getStatus() == BranchStatus.INACTIVE) {
+            throw new InvalidFieldValueException("managerUserId",
+                    "Không thể gắn quản lý cho chi nhánh đã ngừng hoạt động.");
+        }
+        User target = userRepository.lockById(targetManagerId)
+                .orElseThrow(() -> new InvalidFieldValueException("managerUserId",
+                        "Không tìm thấy tài khoản quản lý."));
+        if (target.getPosition() != Roles.BRANCH_MANAGER) {
+            throw new InvalidFieldValueException("managerUserId",
+                    "Chỉ được gắn tài khoản có vai trò Quản lý chi nhánh.");
+        }
+        if (!target.isActive()) {
+            throw new InvalidFieldValueException("managerUserId",
+                    "Tài khoản quản lý đang ngừng hoạt động.");
+        }
+        if (target.getBranchId() != null && !Objects.equals(target.getBranchId(), branch.getId())) {
+            throw new ConflictException(ErrorCode.RESOURCE_CONFLICT,
+                    "Quản lý này đang phụ trách chi nhánh khác. Vui lòng gỡ khỏi chi nhánh cũ trước.");
+        }
+        return target;
+    }
+
+    private boolean detachOtherManagers(Branch branch, Integer keepManagerId) {
+        Map<Integer, User> toDetach = new LinkedHashMap<>();
+        for (User u : userRepository.findAllByBranchIdAndPosition(branch.getId(), Roles.BRANCH_MANAGER)) {
+            if (!Objects.equals(u.getId(), keepManagerId)) {
+                toDetach.put(u.getId(), u);
+            }
+        }
+        Integer currentManagerId = branch.getManagerId();
+        if (currentManagerId != null && !Objects.equals(currentManagerId, keepManagerId)
+                && !toDetach.containsKey(currentManagerId)) {
+            userRepository.lockById(currentManagerId).ifPresent(u -> toDetach.put(u.getId(), u));
+        }
+        for (User prev : toDetach.values()) {
+            prev.setBranchId(null);
+            // pin_lookup_hash phụ thuộc branchId (§7.2): xoá PIN khi gỡ khỏi chi nhánh.
+            prev.setPinHash(null);
+            prev.setPinLookupHash(null);
+            prev.setPinSetAt(null);
+            userRepository.save(prev);
+            refreshTokenStore.revokeAllOfUser(prev.getId());
+        }
+        return !toDetach.isEmpty();
+    }
 
     /**
      * Ngừng/inactive bị chặn khi còn nhân sự ACTIVE — tránh chi nhánh "mồ côi" mà người vẫn đăng nhập.
@@ -179,16 +294,30 @@ public class BranchServiceImpl implements BranchService {
         return branchRepository.findById(id).orElseThrow(() -> new NotFoundException(RESOURCE_NAME));
     }
 
+    private Branch lock(Integer id) {
+        return branchRepository.lockById(id).orElseThrow(() -> new NotFoundException(RESOURCE_NAME));
+    }
+
     private BranchDto toDto(Branch branch) {
-        return branchMapper.toDto(branch, managerName(branch),
+        User manager = resolveActiveManager(branch);
+        return branchMapper.toDto(branch, manager == null ? null : manager.getId(),
+                manager == null ? null : manager.getFullName(),
                 userRepository.countByBranchIdAndStatus(branch.getId(), UserStatus.ACTIVE));
     }
 
-    private String managerName(Branch branch) {
-        if (branch.getManagerId() == null) {
-            return null;
+    private User resolveActiveManager(Branch branch) {
+        if (branch.getManagerId() != null) {
+            User direct = userRepository.findById(branch.getManagerId())
+                    .filter(u -> u.isActive() && u.getPosition() == Roles.BRANCH_MANAGER)
+                    .orElse(null);
+            if (direct != null) {
+                return direct;
+            }
         }
-        return userRepository.findById(branch.getManagerId()).map(User::getFullName).orElse(null);
+        return userRepository.findAllByBranchIdAndStatus(branch.getId(), UserStatus.ACTIVE).stream()
+                .filter(u -> u.getPosition() == Roles.BRANCH_MANAGER)
+                .findFirst()
+                .orElse(null);
     }
 
     private static String roleCodeOf(User user) {
@@ -200,6 +329,7 @@ public class BranchServiceImpl implements BranchService {
                 "id", String.valueOf(branch.getId()),
                 "code", String.valueOf(branch.getCode()),
                 "name", String.valueOf(branch.getName()),
+                "managerId", String.valueOf(branch.getManagerId()),
                 "status", String.valueOf(branch.getStatus()));
     }
 

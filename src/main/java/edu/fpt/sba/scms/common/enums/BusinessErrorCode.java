@@ -38,7 +38,8 @@ public enum BusinessErrorCode {
     INVALID_SHIFT_TIME("Thời gian ca làm việc không hợp lệ."),
     REFUND_NOT_ALLOWED("Đơn hàng không đủ điều kiện hoàn tiền."),
     PAYROLL_LOCKED("Bảng lương đã chốt/duyệt, không thể chỉnh sửa."),
-    REPORT_NO_DATA_TO_EXPORT("Không có dữ liệu để xuất.");
+    REPORT_NO_DATA_TO_EXPORT("Không có dữ liệu để xuất."),
+    SHIFT_ASSIGNMENT_REQUIRED("Nhân viên chưa được phân công ca làm việc phù hợp để chấm công.");
 
 
     private final String message;

@@ -28,7 +28,13 @@ public record ShiftResponse(
         BigDecimal variance,
         String discrepancyReason,
         ShiftStatus status,
-        Instant createdAt
+        Instant createdAt,
+        String branchName,
+        String openedByName,
+        String closedByName,
+        Integer previousShiftId,
+        BigDecimal previousClosingCash,
+        BigDecimal openingVariance,
+        String openingNote
 ) {
 }
-

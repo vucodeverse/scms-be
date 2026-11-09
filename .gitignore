@@ -44,3 +44,6 @@ secrets/
 application-local.yml
 application-local.yaml
 application-*.local.yml
+
+### macOS ###
+.DS_Store

@@ -16,7 +16,8 @@ public record CashTransactionResponse(
         Integer createdBy,
         Integer approvedBy,
         Boolean isSelfInitiated,
-        Instant createdAt
+        Instant createdAt,
+        String createdByName,
+        String approvedByName
 ) {
 }
-
