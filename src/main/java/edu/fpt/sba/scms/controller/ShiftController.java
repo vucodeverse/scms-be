@@ -2,9 +2,12 @@ package edu.fpt.sba.scms.controller;
 
 import edu.fpt.sba.scms.dto.ApiErrorResponse;
 import edu.fpt.sba.scms.dto.PageResponse;
+import edu.fpt.sba.scms.dto.request.AcceptShiftHandoverRequest;
+import edu.fpt.sba.scms.dto.request.CancelShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.CashAdjustmentRequest;
 import edu.fpt.sba.scms.dto.request.CloseShiftRequest;
 import edu.fpt.sba.scms.dto.request.CreateScheduleShiftRequest;
+import edu.fpt.sba.scms.dto.request.InitiateShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.OpenShiftRequest;
 import edu.fpt.sba.scms.dto.request.UpdateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.query.ShiftListQuery;
@@ -58,11 +61,13 @@ public class ShiftController {
     private final ShiftService shiftService;
 
     @Operation(summary = "Danh sách lịch sử ca làm việc & đối soát két",
-            description = "Tra cứu các phiên ca theo chi nhánh (COO có thể xem tất cả chi nhánh), trạng thái và khoảng ngày (phân trang).")
+            description = "Tra cứu các phiên ca theo chi nhánh (COO có thể xem tất cả chi nhánh), trạng thái và khoảng ngày (phân trang). Thu ngân chỉ xem được ca đã đóng gần nhất của chi nhánh mình.")
     @GetMapping
     @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
-    public PageResponse<ShiftResponse> listShifts(@ModelAttribute @Valid ShiftListQuery query) {
-        return PageResponse.of(shiftService.listShifts(query));
+    public PageResponse<ShiftResponse> listShifts(
+            @ModelAttribute @Valid ShiftListQuery query,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return PageResponse.of(shiftService.listShifts(query, principal));
     }
 
     @Operation(summary = "Mở ca bán hàng & khai báo tiền đầu ca (UC24)",
@@ -102,6 +107,39 @@ public class ShiftController {
         return shiftService.cashOut(id, request, principal);
     }
 
+    @Operation(summary = "Khởi tạo bàn giao két giữa ca (Mid-shift Handover)",
+            description = "Thu ngân đang trực (hoặc Quản lý chi nhánh) kiểm đếm két giữa ca để bàn giao cho người khác mà chưa đóng ca; tự check-out người giao và tạm khóa POS cho đến khi người nhận xác nhận.")
+    @PostMapping("/{id}/handover/initiate")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
+    public ShiftResponse initiateHandover(
+            @PathVariable Integer id,
+            @RequestBody @Valid InitiateShiftHandoverRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return shiftService.initiateHandover(id, request, principal);
+    }
+
+    @Operation(summary = "Xác nhận kiểm két nhận ca giữa ca",
+            description = "Thu ngân mới (nhập PIN) hoặc Quản lý chi nhánh đứng quầy đếm lại tiền két để tiếp nhận phiên ca đang mở, tự động check-in thu ngân nhận và mở khóa POS.")
+    @PostMapping("/{id}/handover/accept")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
+    public ShiftResponse acceptHandover(
+            @PathVariable Integer id,
+            @RequestBody @Valid AcceptShiftHandoverRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return shiftService.acceptHandover(id, request, principal);
+    }
+
+    @Operation(summary = "Hủy yêu cầu bàn giao két giữa ca đang chờ",
+            description = "Quản lý chi nhánh, COO hoặc người khởi tạo hủy phiếu bàn giao đang chờ nhận để mở lại hoạt động ca.")
+    @PostMapping("/{id}/handover/cancel")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
+    public ShiftResponse cancelHandover(
+            @PathVariable Integer id,
+            @RequestBody(required = false) @Valid CancelShiftHandoverRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return shiftService.cancelHandover(id, request, principal);
+    }
+
     @Operation(summary = "Đóng ca & kiểm đếm tiền mặt két - Close Shift (UC27)",
             description = "Thu ngân / Quản lý chốt ca, kiểm đếm số tiền mặt thực tế. Hệ thống đối soát và tính chênh lệch; nếu lệch bắt buộc giải trình (BR-38, BR-39).")
     @PostMapping("/{id}/close")
@@ -138,11 +176,23 @@ public class ShiftController {
     }
 
     @Operation(summary = "Xem chi tiết tổng kết một ca làm việc theo ID",
-            description = "Xem lại số dư đầu ca, doanh thu và toàn bộ giao dịch két của một ca bất kỳ.")
+            description = "Xem lại số dư đầu ca, doanh thu và toàn bộ giao dịch két của một ca. Thu ngân chỉ xem được chi tiết ca hiện tại hoặc ca đã đóng gần nhất.")
     @GetMapping("/{id}")
     @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
-    public ShiftSummaryResponse getShiftSummary(@PathVariable Integer id) {
-        return shiftService.getShiftSummary(id);
+    public ShiftSummaryResponse getShiftSummary(
+            @PathVariable Integer id,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return shiftService.getShiftSummary(id, principal);
+    }
+
+    @Operation(summary = "Danh sách ca Đã lên lịch quanh hôm nay có thể mở ca",
+            description = "Cung cấp các ca ở trạng thái SCHEDULED quanh ngày hiện tại để Thu ngân / Quản lý chọn khi Kiểm két & Mở ca mà không lộ lịch phân công nhân sự của toàn chi nhánh.")
+    @GetMapping("/open-candidates")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
+    public List<ShiftScheduleResponse> getOpenCandidates(
+            @RequestParam Integer branchId,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return shiftService.getOpenableScheduledShifts(branchId, principal);
     }
 
     @Operation(summary = "Tạo lịch phân ca làm việc (UC08)",
@@ -180,7 +230,7 @@ public class ShiftController {
 
     @Operation(summary = "Tra cứu lịch ca làm việc theo khoảng thời gian (UC08)")
     @GetMapping("/schedules")
-    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER', 'STAFF')")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER')")
     public List<ShiftScheduleResponse> getSchedules(
             @RequestParam Integer branchId,
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate startDate,

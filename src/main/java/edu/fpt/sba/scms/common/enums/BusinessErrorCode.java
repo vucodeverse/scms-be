@@ -39,7 +39,8 @@ public enum BusinessErrorCode {
     REFUND_NOT_ALLOWED("Đơn hàng không đủ điều kiện hoàn tiền."),
     PAYROLL_LOCKED("Bảng lương đã chốt/duyệt, không thể chỉnh sửa."),
     REPORT_NO_DATA_TO_EXPORT("Không có dữ liệu để xuất."),
-    SHIFT_ASSIGNMENT_REQUIRED("Nhân viên chưa được phân công ca làm việc phù hợp để chấm công.");
+    SHIFT_ASSIGNMENT_REQUIRED("Nhân viên chưa được phân công ca làm việc phù hợp để chấm công."),
+    SHIFT_HANDOVER_PENDING("Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca. Vui lòng hoàn tất kiểm két nhận ca trước khi giao dịch.");
 
 
     private final String message;

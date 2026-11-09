@@ -3,6 +3,7 @@ package edu.fpt.sba.scms.dto.request;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
@@ -16,7 +17,13 @@ public record CloseShiftRequest(
 
         @Schema(description = "Lý do giải trình chênh lệch (Bắt buộc theo BR-38 nếu lệch tiền)", example = "Thối nhầm 10k cho khách đơn #12")
         @Size(max = 500, message = "Lý do tối đa 500 ký tự")
-        String discrepancyReason
-) {
-}
+        String discrepancyReason,
 
+        @Schema(description = "Mã PIN cá nhân (4-6 số) của Thu ngân để xác nhận đóng ca & tự động Check-out (tùy chọn với Quản lý/COO)", example = "2468")
+        @Pattern(regexp = "^$|^[0-9]{4,6}$", message = "Mã PIN phải gồm từ 4 đến 6 chữ số")
+        String pin
+) {
+    public CloseShiftRequest(BigDecimal countedCash, String discrepancyReason) {
+        this(countedCash, discrepancyReason, null);
+    }
+}

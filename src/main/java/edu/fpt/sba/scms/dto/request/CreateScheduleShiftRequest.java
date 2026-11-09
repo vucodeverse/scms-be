@@ -7,6 +7,7 @@ import jakarta.validation.constraints.NotNull;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 @Schema(name = "CreateScheduleShiftRequest", description = "Tạo lịch ca làm việc và phân công nhân sự (UC08, BR-15)")
 public record CreateScheduleShiftRequest(
@@ -31,12 +32,27 @@ public record CreateScheduleShiftRequest(
         Instant plannedEnd,
 
         @Schema(description = "Danh sách ID nhân viên phân công vào ca này", example = "[2, 3, 5]")
-        List<Integer> assignedEmployeeIds
+        List<Integer> assignedEmployeeIds,
+
+        @Schema(description = "Vai trò kiêm nhiệm tạm thời theo ca (map employeeId -> roleCode: BARISTA/WAITER/CASHIER/BRANCH_MANAGER; mặc định lấy chức danh gốc)")
+        Map<Integer, String> employeeRoles
 ) {
     public CreateScheduleShiftRequest {
         if (assignedEmployeeIds == null) {
             assignedEmployeeIds = List.of();
         }
+        if (employeeRoles == null) {
+            employeeRoles = Map.of();
+        }
+    }
+
+    public CreateScheduleShiftRequest(
+            Integer branchId,
+            LocalDate shiftDate,
+            ShiftType shiftType,
+            Instant plannedStart,
+            Instant plannedEnd,
+            List<Integer> assignedEmployeeIds) {
+        this(branchId, shiftDate, shiftType, plannedStart, plannedEnd, assignedEmployeeIds, Map.of());
     }
 }
-

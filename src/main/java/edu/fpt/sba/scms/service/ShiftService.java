@@ -1,8 +1,11 @@
 package edu.fpt.sba.scms.service;
 
+import edu.fpt.sba.scms.dto.request.AcceptShiftHandoverRequest;
+import edu.fpt.sba.scms.dto.request.CancelShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.CashAdjustmentRequest;
 import edu.fpt.sba.scms.dto.request.CloseShiftRequest;
 import edu.fpt.sba.scms.dto.request.CreateScheduleShiftRequest;
+import edu.fpt.sba.scms.dto.request.InitiateShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.OpenShiftRequest;
 import edu.fpt.sba.scms.dto.request.UpdateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.query.ShiftListQuery;
@@ -29,17 +32,23 @@ public interface ShiftService {
 
     CashTransactionResponse cashOut(Integer shiftId, CashAdjustmentRequest request, UserPrincipal principal);
 
+    ShiftResponse initiateHandover(Integer shiftId, InitiateShiftHandoverRequest request, UserPrincipal principal);
+
+    ShiftResponse acceptHandover(Integer shiftId, AcceptShiftHandoverRequest request, UserPrincipal principal);
+
+    ShiftResponse cancelHandover(Integer shiftId, CancelShiftHandoverRequest request, UserPrincipal principal);
+
     ShiftResponse closeShift(Integer shiftId, CloseShiftRequest request, UserPrincipal principal);
 
     ShiftSummaryResponse getCurrentShiftSummary(Integer branchId);
 
-    ShiftSummaryResponse getShiftSummary(Integer shiftId);
+    ShiftSummaryResponse getShiftSummary(Integer shiftId, UserPrincipal principal);
 
     PreviousShiftSummaryResponse getPreviousClosedShift(Integer branchId);
 
     List<BranchShiftOverviewResponse> getBranchesOverview();
 
-    Page<ShiftResponse> listShifts(ShiftListQuery query);
+    Page<ShiftResponse> listShifts(ShiftListQuery query, UserPrincipal principal);
 
     ShiftScheduleResponse createSchedule(CreateScheduleShiftRequest request, UserPrincipal principal);
 
@@ -48,4 +57,6 @@ public interface ShiftService {
     void deleteSchedule(Integer shiftId, UserPrincipal principal);
 
     List<ShiftScheduleResponse> getSchedules(Integer branchId, LocalDate startDate, LocalDate endDate);
+
+    List<ShiftScheduleResponse> getOpenableScheduledShifts(Integer branchId, UserPrincipal principal);
 }

@@ -2,14 +2,24 @@ package edu.fpt.sba.scms.domain.shift;
 
 import edu.fpt.sba.scms.common.enums.ShiftType;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 
 /**
  * Quy tắc nghiệp vụ phân ca và kiểm tra xung đột lịch làm việc (Pure Java - Domain).
  * Hiện thực quy tắc nghiệp vụ BR-15.
  */
 public final class ShiftSchedulePolicy {
+
+    private static final LocalTime MORNING_START_BOUNDARY = LocalTime.of(6, 0);
+    private static final LocalTime MORNING_END = LocalTime.of(12, 30);
+    private static final LocalTime EVENING_END = LocalTime.of(18, 0);
+    private static final LocalTime NIGHT_END = LocalTime.of(23, 0);
+    private static final Duration AD_HOC_FALLBACK_DURATION = Duration.ofHours(5);
 
     private ShiftSchedulePolicy() {
         // Utility class
@@ -40,23 +50,42 @@ public final class ShiftSchedulePolicy {
 
     /**
      * Suy luận loại ca làm việc dựa trên thời gian mở ca theo giờ địa phương.
-     * Sáng (06:00 - 14:00) -> MORNING
-     * Chiều/Tối (14:00 - 22:00) -> EVENING
-     * Đêm (22:00 - 06:00) -> NIGHT
+     * Ca sáng (07:00 – 12:30, mở từ 06:00 đến trước 12:30) -> MORNING
+     * Ca chiều (12:30 – 18:00, từ 12:30 đến trước 18:00) -> EVENING
+     * Ca tối (18:00 – 23:00, từ 18:00 trở đi và đêm trước 06:00) -> NIGHT
      */
     public static ShiftType inferShiftType(LocalTime time) {
         if (time == null) {
             return ShiftType.MORNING;
         }
-        if (time.isBefore(LocalTime.of(6, 0))) {
+        if (time.isBefore(MORNING_START_BOUNDARY)) {
             return ShiftType.NIGHT;
         }
-        if (time.isBefore(LocalTime.of(14, 0))) {
+        if (time.isBefore(MORNING_END)) {
             return ShiftType.MORNING;
         }
-        if (time.isBefore(LocalTime.of(22, 0))) {
+        if (time.isBefore(EVENING_END)) {
             return ShiftType.EVENING;
         }
         return ShiftType.NIGHT;
+    }
+
+    /**
+     * Tính thời điểm kết thúc dự kiến cho ca mở phát sinh dựa trên khung giờ chuẩn của từng ca:
+     * Ca sáng -> 12:30, Ca chiều -> 18:00, Ca tối -> 23:00 trong ngày nếu đang nằm trong giờ hoạt động;
+     * trường hợp mở ngoài khung chuẩn (trước 06:00 hoặc từ 23:00 trở đi) dự kiến 5 giờ.
+     */
+    public static Instant resolveAdHocPlannedEnd(ShiftType shiftType, LocalDate shiftDate, Instant now, ZoneId zone) {
+        LocalTime localNow = ZonedDateTime.ofInstant(now, zone).toLocalTime();
+        if (localNow.isBefore(MORNING_START_BOUNDARY) || !localNow.isBefore(NIGHT_END)) {
+            return now.plus(AD_HOC_FALLBACK_DURATION);
+        }
+        LocalTime targetEnd = switch (shiftType != null ? shiftType : ShiftType.MORNING) {
+            case MORNING -> MORNING_END;
+            case EVENING -> EVENING_END;
+            case NIGHT -> NIGHT_END;
+        };
+        Instant candidate = shiftDate.atTime(targetEnd).atZone(zone).toInstant();
+        return candidate.isAfter(now) ? candidate : now.plus(AD_HOC_FALLBACK_DURATION);
     }
 }

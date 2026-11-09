@@ -7,6 +7,7 @@ import edu.fpt.sba.scms.common.enums.DiscountType;
 import edu.fpt.sba.scms.common.enums.OrderStatus;
 import edu.fpt.sba.scms.common.enums.ProductStatus;
 import edu.fpt.sba.scms.common.enums.RecordStatus;
+import edu.fpt.sba.scms.common.enums.ShiftStatus;
 import edu.fpt.sba.scms.common.enums.SortDirection;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
@@ -30,6 +31,7 @@ import edu.fpt.sba.scms.model.OrderItemTopping;
 import edu.fpt.sba.scms.model.OrderLine;
 import edu.fpt.sba.scms.model.OrderVoucher;
 import edu.fpt.sba.scms.model.Product;
+import edu.fpt.sba.scms.model.Shift;
 import edu.fpt.sba.scms.model.Topping;
 import edu.fpt.sba.scms.model.Voucher;
 import edu.fpt.sba.scms.repository.OrderItemToppingRepository;
@@ -38,6 +40,7 @@ import edu.fpt.sba.scms.repository.OrderRepository;
 import edu.fpt.sba.scms.repository.OrderSpecs;
 import edu.fpt.sba.scms.repository.OrderVoucherRepository;
 import edu.fpt.sba.scms.repository.ProductRepository;
+import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.repository.ToppingRepository;
 import edu.fpt.sba.scms.repository.VoucherRepository;
 import edu.fpt.sba.scms.security.BranchContext;
@@ -69,6 +72,7 @@ public class OrderServiceImpl implements OrderService {
     private final OrderVoucherRepository orderVoucherRepository;
     private final VoucherRepository voucherRepository;
     private final ProductRepository productRepository;
+    private final ShiftRepository shiftRepository;
     private final ToppingRepository toppingRepository;
     private final AuditLogService auditLogService;
     private final OrderMapper orderMapper;
@@ -77,6 +81,7 @@ public class OrderServiceImpl implements OrderService {
     @Transactional(rollbackFor = Exception.class)
     public OrderDetailDto createOrder(CreateOrderRequest request, UserPrincipal principal) {
         Integer branchId = BranchContext.resolveBranchScope(request.branchId());
+        ensureDrawerNotLockedForHandover(branchId != null ? branchId : 1);
         Integer cashierId = principal != null ? principal.userId() : null;
 
         List<CreateOrderLineRequest> lineRequests = resolveLineRequests(request);
@@ -89,6 +94,19 @@ public class OrderServiceImpl implements OrderService {
                 savedOrder.getId(), savedOrder.getBranchId(), savedOrder.getFinalAmount());
 
         return orderMapper.toDetailDto(savedOrder, lineDtos, null);
+    }
+
+    private void ensureDrawerNotLockedForHandover(Integer branchId) {
+        if (branchId == null) {
+            return;
+        }
+        shiftRepository.findFirstByBranchIdAndStatusOrderByOpenedAtDesc(branchId, ShiftStatus.OPEN)
+                .filter(Shift::isHandoverPending)
+                .ifPresent(s -> {
+                    throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
+                            "Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca #" + s.getId()
+                                    + ". Vui lòng kiểm két nhận ca trước khi tạo đơn POS mới.");
+                });
     }
 
     /** Trả về danh sách line từ request (rỗng nếu không có). */

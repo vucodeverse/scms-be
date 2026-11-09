@@ -85,6 +85,12 @@ public class RefundServiceImpl implements RefundService {
                 .orElseThrow(() -> new BusinessRuleException(BusinessErrorCode.SHIFT_NOT_OPEN,
                         "Chi nhánh chưa mở ca làm việc. Bắt buộc phải có ca mở để xuất tiền hoàn từ két tiền mặt (BR-34)."));
 
+        if (openShift.isHandoverPending()) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
+                    "Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca #" + openShift.getId()
+                            + ". Vui lòng hoàn tất kiểm két nhận ca trước khi chi hoàn tiền.");
+        }
+
         // 5. Kiểm tra tiền két có đủ để chi trả hoàn tiền không qua ShiftCashCalculator
         BigDecimal currentCash = openShift.getExpectedCash() != null ? openShift.getExpectedCash() : BigDecimal.ZERO;
         if (!ShiftCashCalculator.isSufficientCash(currentCash, request.amount())) {

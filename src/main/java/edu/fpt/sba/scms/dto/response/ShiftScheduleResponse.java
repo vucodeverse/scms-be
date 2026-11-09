@@ -7,6 +7,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 
 @Schema(name = "ShiftScheduleResponse", description = "Lịch ca làm việc và danh sách nhân viên phân công")
 public record ShiftScheduleResponse(
@@ -18,7 +19,7 @@ public record ShiftScheduleResponse(
         Instant plannedEnd,
         ShiftStatus status,
         List<Integer> assignedEmployeeIds,
-        int totalEmployees
+        int totalEmployees,
+        Map<Integer, String> employeeRoles
 ) {
 }
-
