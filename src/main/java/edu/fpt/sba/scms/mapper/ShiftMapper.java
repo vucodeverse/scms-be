@@ -35,10 +35,12 @@ public interface ShiftMapper {
     @Mapping(target = "assignedEmployeeIds", source = "assignedEmployeeIds")
     @Mapping(target = "totalEmployees", expression = "java(assignedEmployeeIds != null ? assignedEmployeeIds.size() : 0)")
     @Mapping(target = "employeeRoles", source = "employeeRoles")
+    @Mapping(target = "replacementEmployeeIds", source = "replacementEmployeeIds")
     ShiftScheduleResponse toShiftScheduleResponse(
             Shift shift,
             List<Integer> assignedEmployeeIds,
-            Map<Integer, String> employeeRoles);
+            Map<Integer, String> employeeRoles,
+            List<Integer> replacementEmployeeIds);
 
     @Mapping(target = "fromUserName", ignore = true)
     @Mapping(target = "toUserName", ignore = true)

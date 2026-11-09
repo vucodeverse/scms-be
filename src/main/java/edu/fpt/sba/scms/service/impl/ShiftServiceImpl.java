@@ -161,7 +161,7 @@ public class ShiftServiceImpl implements ShiftService {
         boolean autoCheckedIn = false;
         if (principal != null && Roles.CASHIER.code().equals(principal.role())) {
             autoCheckedIn = autoAssignAndCheckInCashier(
-                    savedShift, principal.userId(), now, "Tự động check-in khi mở ca #" + savedShift.getId());
+                    savedShift, principal.userId(), now, "Tự động check-in khi mở ca #" + savedShift.getId(), false);
         }
 
         String auditDetail = "Mở ca ID=" + savedShift.getId() + ", tiền đầu ca=" + request.openingCash();
@@ -439,12 +439,14 @@ public class ShiftServiceImpl implements ShiftService {
         Shift savedShift = shiftRepository.save(shift);
 
         boolean autoCheckedIn = false;
-        if (Roles.CASHIER.code().equals(incomingUser.roleCode())) {
+        if (!Roles.COO.code().equals(incomingUser.roleCode())) {
             autoCheckedIn = autoAssignAndCheckInCashier(
                     savedShift,
                     incomingUser.getId(),
                     now,
-                    "Tự động check-in khi nhận bàn giao két ca #" + savedShift.getId());
+                    "Tự động check-in khi nhận bàn giao két ca #" + savedShift.getId()
+                            + (Roles.CASHIER.code().equals(incomingUser.roleCode()) ? "" : " (Gán tạm vai trò Thu ngân - Nhân sự thay thế)"),
+                    true);
         }
 
         auditLogService.log(AuditAction.SHIFT_OPEN, "shift", savedShift.getId(), null,
@@ -506,7 +508,8 @@ public class ShiftServiceImpl implements ShiftService {
                     savedShift,
                     actorId,
                     Instant.now(),
-                    "Tự động check-in lại sau khi hủy bàn giao két ca #" + savedShift.getId());
+                    "Tự động check-in lại sau khi hủy bàn giao két ca #" + savedShift.getId(),
+                    false);
         }
 
         auditLogService.log(AuditAction.SHIFT_OPEN, "shift", savedShift.getId(), "PENDING_RECEIVE",
@@ -788,14 +791,14 @@ public class ShiftServiceImpl implements ShiftService {
                 .build();
         Shift savedShift = shiftRepository.save(shift);
 
-        List<ShiftAssignment> savedAssignments = assignEmployeesToShift(savedShift, empIds, userMap, normalizedRoles);
+        List<ShiftAssignment> savedAssignments = assignEmployeesToShift(savedShift, empIds, userMap, normalizedRoles, Set.of());
         List<Integer> assignedIds = savedAssignments.stream().map(a -> a.getId().getEmployeeId()).toList();
         Map<Integer, String> roleMap = buildRoleMap(savedAssignments, userMap);
 
         auditLogService.log(AuditAction.SCHEDULE_SAVE, "shift", savedShift.getId(), null,
                 "Tạo lịch ca ID=" + savedShift.getId() + " ngày " + request.shiftDate() + ", nhân viên: " + assignedIds);
 
-        return shiftMapper.toShiftScheduleResponse(savedShift, assignedIds, roleMap);
+        return shiftMapper.toShiftScheduleResponse(savedShift, assignedIds, roleMap, List.of());
     }
 
     @Override
@@ -828,16 +831,38 @@ public class ShiftServiceImpl implements ShiftService {
         shift.setPlannedEnd(request.plannedEnd());
         Shift savedShift = shiftRepository.save(shift);
 
+        List<ShiftAssignment> previousAssignments = shiftAssignmentRepository.findByIdShiftId(savedShift.getId());
+        Set<Integer> previouslyAssignedIds = previousAssignments.stream()
+                .map(a -> a.getId().getEmployeeId())
+                .collect(Collectors.toSet());
+        Set<Integer> replacementEmpIds = new HashSet<>(previousAssignments.stream()
+                .filter(a -> Boolean.TRUE.equals(a.getIsReplacement()))
+                .map(a -> a.getId().getEmployeeId())
+                .toList());
+
+        // Nếu ca đã OPEN mà gán bổ sung/thay thế nhân viên mới -> tự động gán cờ nhân sự thay thế
+        if (savedShift.getStatus() == ShiftStatus.OPEN) {
+            for (Integer empId : empIds) {
+                if (!previouslyAssignedIds.contains(empId)) {
+                    replacementEmpIds.add(empId);
+                }
+            }
+        }
+
         shiftAssignmentRepository.deleteByIdShiftId(savedShift.getId());
         shiftAssignmentRepository.flush();
-        List<ShiftAssignment> savedAssignments = assignEmployeesToShift(savedShift, empIds, userMap, normalizedRoles);
+        List<ShiftAssignment> savedAssignments = assignEmployeesToShift(savedShift, empIds, userMap, normalizedRoles, replacementEmpIds);
         List<Integer> assignedIds = savedAssignments.stream().map(a -> a.getId().getEmployeeId()).toList();
+        List<Integer> replacementIds = savedAssignments.stream()
+                .filter(a -> Boolean.TRUE.equals(a.getIsReplacement()))
+                .map(a -> a.getId().getEmployeeId())
+                .toList();
         Map<Integer, String> roleMap = buildRoleMap(savedAssignments, userMap);
 
         auditLogService.log(AuditAction.SCHEDULE_SAVE, "shift", savedShift.getId(), null,
                 "Cập nhật lịch ca ID=" + savedShift.getId() + " ngày " + savedShift.getShiftDate() + ", nhân viên: " + assignedIds);
 
-        return shiftMapper.toShiftScheduleResponse(savedShift, assignedIds, roleMap);
+        return shiftMapper.toShiftScheduleResponse(savedShift, assignedIds, roleMap, replacementIds);
     }
 
     @Override
@@ -870,8 +895,12 @@ public class ShiftServiceImpl implements ShiftService {
         for (Shift s : shifts) {
             List<ShiftAssignment> assignments = shiftAssignmentRepository.findByIdShiftId(s.getId());
             List<Integer> empIds = assignments.stream().map(a -> a.getId().getEmployeeId()).toList();
+            List<Integer> replacementIds = assignments.stream()
+                    .filter(a -> Boolean.TRUE.equals(a.getIsReplacement()))
+                    .map(a -> a.getId().getEmployeeId())
+                    .toList();
             Map<Integer, String> roleMap = buildRoleMap(assignments, Map.of());
-            result.add(shiftMapper.toShiftScheduleResponse(s, empIds, roleMap));
+            result.add(shiftMapper.toShiftScheduleResponse(s, empIds, roleMap, replacementIds));
         }
         return result;
     }
@@ -907,7 +936,11 @@ public class ShiftServiceImpl implements ShiftService {
                 empIds = assignments.stream().map(a -> a.getId().getEmployeeId()).toList();
                 roleMap = buildRoleMap(assignments, Map.of());
             }
-            result.add(shiftMapper.toShiftScheduleResponse(s, empIds, roleMap));
+            List<Integer> replacementIds = assignments.stream()
+                    .filter(a -> Boolean.TRUE.equals(a.getIsReplacement()))
+                    .map(a -> a.getId().getEmployeeId())
+                    .toList();
+            result.add(shiftMapper.toShiftScheduleResponse(s, empIds, roleMap, replacementIds));
         }
         return result;
     }
@@ -1440,7 +1473,8 @@ public class ShiftServiceImpl implements ShiftService {
             Shift shift,
             List<Integer> empIds,
             Map<Integer, User> userMap,
-            Map<Integer, String> normalizedRoles) {
+            Map<Integer, String> normalizedRoles,
+            Set<Integer> replacementEmpIds) {
         if (empIds.isEmpty()) {
             return List.of();
         }
@@ -1449,11 +1483,13 @@ public class ShiftServiceImpl implements ShiftService {
         for (Integer empId : empIds) {
             User emp = userMap.get(empId);
             String roleInShift = normalizedRoles.getOrDefault(empId, emp.roleCode());
+            boolean isReplacement = replacementEmpIds != null && replacementEmpIds.contains(empId);
             ShiftAssignment sa = ShiftAssignment.builder()
                     .id(new ShiftAssignmentId(shift.getId(), empId))
                     .shift(shift)
                     .employee(emp)
                     .roleInShift(roleInShift)
+                    .isReplacement(isReplacement)
                     .build();
             assignments.add(sa);
         }
@@ -1464,7 +1500,12 @@ public class ShiftServiceImpl implements ShiftService {
         return principal != null ? principal.userId() : null;
     }
 
-    private boolean autoAssignAndCheckInCashier(Shift savedShift, Integer cashierId, Instant now, String attendanceNote) {
+    private boolean autoAssignAndCheckInCashier(
+            Shift savedShift,
+            Integer cashierId,
+            Instant now,
+            String attendanceNote,
+            boolean isReplacement) {
         User cashier = userRepository.findWithRoleAndBranchById(cashierId).orElse(null);
         if (cashier == null || !cashier.isActive()) {
             return false;
@@ -1474,7 +1515,8 @@ public class ShiftServiceImpl implements ShiftService {
         }
 
         ShiftAssignmentId assignmentId = new ShiftAssignmentId(savedShift.getId(), cashierId);
-        if (!shiftAssignmentRepository.existsById(assignmentId)) {
+        ShiftAssignment existingSa = shiftAssignmentRepository.findById(assignmentId).orElse(null);
+        if (existingSa == null) {
             List<ShiftAssignment> conflicts = shiftAssignmentRepository.findConflictingAssignments(
                     cashierId, savedShift.getId(), savedShift.getPlannedStart(), savedShift.getPlannedEnd());
             if (conflicts.isEmpty()) {
@@ -1483,12 +1525,17 @@ public class ShiftServiceImpl implements ShiftService {
                         .shift(savedShift)
                         .employee(cashier)
                         .roleInShift(Roles.CASHIER.code())
+                        .isReplacement(isReplacement)
                         .build();
                 shiftAssignmentRepository.save(sa);
             } else {
                 log.warn("Bỏ qua tự gán Thu ngân {} vào ca #{} do trùng khung giờ ca khác.",
                         cashierId, savedShift.getId());
             }
+        } else if (isReplacement && !Boolean.TRUE.equals(existingSa.getIsReplacement())) {
+            existingSa.setIsReplacement(true);
+            existingSa.setRoleInShift(Roles.CASHIER.code());
+            shiftAssignmentRepository.save(existingSa);
         }
 
         if (attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(cashierId).isPresent()) {

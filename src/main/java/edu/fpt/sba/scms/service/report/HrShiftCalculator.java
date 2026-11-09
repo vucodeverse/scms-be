@@ -160,10 +160,13 @@ public final class HrShiftCalculator {
                 return;
             }
             worked++;
-            late += match.getCheckIn().isAfter(shift.getPlannedStart().plus(context.lateGrace())) ? 1 : 0;
-            boolean leftEarly = match.getCheckOut() != null
-                    && match.getCheckOut().isBefore(shift.getPlannedEnd().minus(context.lateGrace()));
-            earlyLeave += leftEarly ? 1 : 0;
+            boolean isReplacement = Boolean.TRUE.equals(shift.getIsReplacement());
+            if (!isReplacement) {
+                late += match.getCheckIn().isAfter(shift.getPlannedStart().plus(context.lateGrace())) ? 1 : 0;
+                boolean leftEarly = match.getCheckOut() != null
+                        && match.getCheckOut().isBefore(shift.getPlannedEnd().minus(context.lateGrace()));
+                earlyLeave += leftEarly ? 1 : 0;
+            }
         }
 
         EmployeeHrDto toDto(EmployeeRow e, CashierSalesRow sales, boolean cashier) {

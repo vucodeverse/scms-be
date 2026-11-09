@@ -99,4 +99,26 @@ class HrShiftCalculatorTest {
         assertThat(report.employees().get(0).earlyLeaveCount()).isEqualTo(1);
         assertThat(report.employees().get(0).lateCount()).isZero();
     }
+
+    @Test
+    void nhanSuThayTheKhongBiTinhDiMuonVaVeSom() {
+        AssignmentRow replacementShift = Rows.of(AssignmentRow.class,
+                "employeeId", CASHIER, "shiftId", 1,
+                "plannedStart", MORNING_START,
+                "plannedEnd", MORNING_START.plus(Duration.ofHours(5)),
+                "isReplacement", true);
+
+        List<AttendanceRow> atts = List.of(attendance(CASHIER,
+                MORNING_START.plus(Duration.ofHours(2)),
+                MORNING_START.plus(Duration.ofHours(4)), 120L));
+
+        HrShiftCalculator.HrReport report = HrShiftCalculator.calculate(
+                employees.subList(0, 1), atts, List.of(replacementShift), List.of(), CONTEXT);
+
+        EmployeeHrDto cashier = report.employees().get(0);
+        assertThat(cashier.shiftsWorked()).isEqualTo(1);
+        assertThat(cashier.lateCount()).as("Nhân sự thay thế không bị tính đi muộn").isZero();
+        assertThat(cashier.earlyLeaveCount()).as("Nhân sự thay thế không bị tính về sớm").isZero();
+        assertThat(cashier.hoursWorked()).isEqualByComparingTo("2.00");
+    }
 }
