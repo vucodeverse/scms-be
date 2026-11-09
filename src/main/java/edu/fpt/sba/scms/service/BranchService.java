@@ -1,5 +1,6 @@
 package edu.fpt.sba.scms.service;
 
+import edu.fpt.sba.scms.dto.request.AssignBranchManagerRequest;
 import edu.fpt.sba.scms.dto.request.CreateBranchRequest;
 import edu.fpt.sba.scms.dto.request.SaveBranchRequest;
 import edu.fpt.sba.scms.dto.request.SaveBranchStatusRequest;
@@ -19,6 +20,9 @@ public interface BranchService {
 
     /** Mã read-only — {@code code} trong body bị bỏ qua. */
     BranchDto update(Integer id, SaveBranchRequest request);
+
+    /** Gắn / đổi / gỡ quản lý phụ trách chi nhánh (chỉ từ tài khoản BM chưa gắn chi nhánh). */
+    BranchDto assignManager(Integer id, AssignBranchManagerRequest request);
 
     /** INACTIVE bị chặn khi còn user ACTIVE (422 BRANCH_NOT_EMPTY). */
     BranchDto changeStatus(Integer id, SaveBranchStatusRequest request);

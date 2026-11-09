@@ -1,5 +1,6 @@
 package edu.fpt.sba.scms.repository;
 
+import edu.fpt.sba.scms.common.enums.Roles;
 import edu.fpt.sba.scms.common.enums.UserStatus;
 import edu.fpt.sba.scms.model.User;
 import jakarta.persistence.LockModeType;
@@ -10,7 +11,6 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.Collection;
-import java.util.List;
 import java.util.List;
 import java.util.Optional;
 
@@ -47,6 +47,9 @@ public interface UserRepository extends JpaRepository<User, Integer>, JpaSpecifi
             where u.branchId = :branchId and u.status = :status
             order by u.fullName""")
     List<User> findAllByBranchIdAndStatus(@Param("branchId") Integer branchId, @Param("status") UserStatus status);
+
+    /** Tất cả user giữ chức danh cụ thể đang gắn với chi nhánh (kể cả đã đổi trạng thái để đồng bộ 1-1). */
+    List<User> findAllByBranchIdAndPosition(Integer branchId, Roles position);
 
     /** Khoá user khi đổi role/status để hai request đồng thời không cùng thoả "còn COO cuối" (tránh tự khoá hết). */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
