@@ -28,6 +28,18 @@ public final class UserSpecs {
      */
     public static Specification<User> managedList(String keyword, String roleCode, Integer branchId,
                                                   UserStatus status) {
+        return managedList(keyword, roleCode, branchId, status, null);
+    }
+
+    /**
+     * @param keyword    tìm trên họ tên, username, phone, email
+     * @param roleCode   mã role cần lọc; null = không lọc
+     * @param branchId   chi nhánh; null = không lọc (COO). BM luôn truyền branch của mình
+     * @param status     trạng thái; null = không lọc
+     * @param unassigned true = {@code branchId IS NULL}; false = {@code branchId IS NOT NULL}; null = không lọc
+     */
+    public static Specification<User> managedList(String keyword, String roleCode, Integer branchId,
+                                                  UserStatus status, Boolean unassigned) {
         return allOf(
                 containsWhenPresent(keyword, TextMatch.of("fullName"), TextMatch.of("username"),
                         TextMatch.of("phone"), TextMatch.of("email")),
@@ -36,6 +48,16 @@ public final class UserSpecs {
                 roleCode == null ? null : (root, query, cb) ->
                         cb.equal(root.get("role").get("code"), roleCode),
                 equalWhenPresent("branchId", branchId),
-                equalWhenPresent("status", status));
+                equalWhenPresent("status", status),
+                unassignedPredicate(unassigned));
+    }
+
+    private static Specification<User> unassignedPredicate(Boolean unassigned) {
+        if (unassigned == null) {
+            return null;
+        }
+        return (root, query, cb) -> unassigned
+                ? cb.isNull(root.get("branchId"))
+                : cb.isNotNull(root.get("branchId"));
     }
 }
