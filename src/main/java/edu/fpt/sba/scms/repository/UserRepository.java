@@ -19,6 +19,8 @@ public interface UserRepository extends JpaRepository<User, Integer>, JpaSpecifi
     @Query("select u from User u join fetch u.role left join fetch u.branch where u.username = :username")
     Optional<User> findWithRoleAndBranchByUsername(@Param("username") String username);
 
+    Optional<User> findByUsername(String username);
+
     @Query("select u from User u join fetch u.role left join fetch u.branch where u.id = :id")
     Optional<User> findWithRoleAndBranchById(@Param("id") Integer id);
 

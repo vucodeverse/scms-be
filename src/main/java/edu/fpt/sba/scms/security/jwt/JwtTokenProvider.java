@@ -47,6 +47,12 @@ public class JwtTokenProvider {
     private final String issuer;
 
     public JwtTokenProvider(AppProperties props) {
+        if (props.jwt().accessSecret() == null || props.jwt().accessSecret().isBlank()
+                || props.jwt().refreshSecret() == null || props.jwt().refreshSecret().isBlank()) {
+            throw new IllegalStateException(
+                    "Thiếu JWT_ACCESS_SECRET / JWT_REFRESH_SECRET. Chạy local hãy bật profile dev "
+                            + "(SPRING_PROFILES_ACTIVE=dev) hoặc set 2 biến môi trường này (≥ 32 ký tự, khác nhau).");
+        }
         if (props.jwt().accessSecret().equals(props.jwt().refreshSecret())) {
             throw new IllegalStateException(
                     "JWT_ACCESS_SECRET và JWT_REFRESH_SECRET phải khác nhau: dùng chung thì refresh token "

@@ -22,6 +22,8 @@ public interface ProductRepository extends JpaRepository<Product, Integer>, JpaS
     @Query("select p from Product p where p.id = :id")
     Optional<Product> findByIdForUpdate(@Param("id") Integer id);
 
+    Optional<Product> findByName(String name);
+
     boolean existsByName(String name);
 
     boolean existsByNameAndIdNot(String name, Integer id);
