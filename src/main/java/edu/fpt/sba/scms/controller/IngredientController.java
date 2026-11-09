@@ -1,7 +1,7 @@
 package edu.fpt.sba.scms.controller;
 
-import edu.fpt.sba.scms.model.Ingredient;
-import edu.fpt.sba.scms.repository.IngredientRepository;
+import edu.fpt.sba.scms.dto.response.IngredientDto;
+import edu.fpt.sba.scms.service.IngredientService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -19,16 +19,12 @@ import java.util.List;
 @Tag(name = "Nguyên vật liệu", description = "Quản lý nguyên vật liệu và công thức định lượng (BOM)")
 public class IngredientController {
 
-    private final IngredientRepository ingredientRepository;
+    private final IngredientService ingredientService;
 
     @Operation(summary = "Danh sách nguyên vật liệu")
     @GetMapping
     @PreAuthorize("permitAll()")
-    public List<Ingredient> list(@RequestParam(required = false, defaultValue = "ACTIVE") String status) {
-        if ("ALL".equalsIgnoreCase(status)) {
-            return ingredientRepository.findAll();
-        }
-        return ingredientRepository.findAllByStatusOrderByNameAsc(status != null ? status.toUpperCase() : "ACTIVE");
+    public List<IngredientDto> list(@RequestParam(required = false, defaultValue = "ACTIVE") String status) {
+        return ingredientService.list(status);
     }
 }
-

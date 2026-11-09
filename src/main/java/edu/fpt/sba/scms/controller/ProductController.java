@@ -192,7 +192,7 @@ public class ProductController {
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
     })
     @PutMapping("/{id}/recipe")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAuthority('COO')")
     public ProductRecipeResponse saveRecipe(@PathVariable Integer id,
                                             @RequestBody @Valid SaveProductRecipeRequest request,
                                             @AuthenticationPrincipal UserPrincipal principal) {
@@ -208,7 +208,7 @@ public class ProductController {
     })
     @DeleteMapping("/{id}/recipe")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAuthority('COO')")
     public void deleteRecipe(@PathVariable Integer id,
                              @RequestParam(required = false) ProductSizeName size,
                              @AuthenticationPrincipal UserPrincipal principal) {
