@@ -80,11 +80,11 @@ class ShiftSchedulePolicyTest {
                 ShiftSchedulePolicy.resolveAdHocPlannedEnd(ShiftType.EVENING, day, eveningNow, vn));
 
         Instant nightNow = day.atTime(19, 0).atZone(vn).toInstant();
-        assertEquals(day.atTime(23, 0).atZone(vn).toInstant(),
+        assertEquals(day.plusDays(1).atTime(5, 0).atZone(vn).toInstant(),
                 ShiftSchedulePolicy.resolveAdHocPlannedEnd(ShiftType.NIGHT, day, nightNow, vn));
 
-        Instant lateNightNow = day.atTime(23, 15).atZone(vn).toInstant();
-        assertEquals(lateNightNow.plus(5, ChronoUnit.HOURS),
+        Instant lateNightNow = day.atTime(0, 50).atZone(vn).toInstant();
+        assertEquals(day.atTime(5, 0).atZone(vn).toInstant(),
                 ShiftSchedulePolicy.resolveAdHocPlannedEnd(ShiftType.NIGHT, day, lateNightNow, vn));
     }
 }
