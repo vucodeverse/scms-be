@@ -11,7 +11,7 @@ public record KioskEmployeeDto(
         boolean isCheckedIn,
         @Schema(description = "true nếu nhân viên được phân công ca làm việc phù hợp để check-in/check-out")
         boolean hasAssignedShift,
-        @Schema(description = "Nhãn ca làm việc được gán (vd: Ca chiều · 14:30–22:30), null nếu chưa phân công")
+        @Schema(description = "Nhãn ca làm việc được gán (vd: Ca chiều · 12:30–18:00), null nếu chưa phân công")
         String shiftLabel,
         @Schema(description = "Trạng thái ca phân công: OPEN, SCHEDULED, CLOSED hoặc null")
         String shiftStatus,

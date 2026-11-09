@@ -15,7 +15,7 @@ public record ShiftSummaryResponse(
         BigDecimal totalCashIn,
         BigDecimal totalCashOut,
         BigDecimal totalRefundOut,
-        BigDecimal currentCashBalance
+        BigDecimal currentCashBalance,
+        List<ShiftHandoverResponse> handovers
 ) {
 }
-

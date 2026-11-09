@@ -24,6 +24,9 @@ public record BranchShiftOverviewResponse(
         BigDecimal currentCashBalance,
         Integer previousClosedShiftId,
         BigDecimal previousClosingCash,
-        Instant previousClosedAt
+        Instant previousClosedAt,
+        Integer activeCashierId,
+        String activeCashierName,
+        boolean handoverPending
 ) {
 }

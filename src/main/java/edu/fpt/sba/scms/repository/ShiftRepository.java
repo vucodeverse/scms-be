@@ -1,6 +1,7 @@
 package edu.fpt.sba.scms.repository;
 
 import edu.fpt.sba.scms.common.enums.ShiftStatus;
+import edu.fpt.sba.scms.common.enums.ShiftType;
 import edu.fpt.sba.scms.model.Shift;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
@@ -32,6 +33,15 @@ public interface ShiftRepository extends JpaRepository<Shift, Integer>, JpaSpeci
     Optional<Shift> findByIdForUpdate(@Param("id") Integer id);
 
     boolean existsByBranchIdAndStatus(Integer branchId, ShiftStatus status);
+
+    boolean existsByBranchIdAndShiftDateAndShiftTypeAndStatusNot(
+            Integer branchId, LocalDate shiftDate, ShiftType shiftType, ShiftStatus status);
+
+    boolean existsByBranchIdAndShiftDateAndShiftTypeAndStatusNotAndIdNot(
+            Integer branchId, LocalDate shiftDate, ShiftType shiftType, ShiftStatus status, Integer id);
+
+    Optional<Shift> findFirstByBranchIdAndShiftDateAndShiftTypeAndStatusOrderByIdAsc(
+            Integer branchId, LocalDate shiftDate, ShiftType shiftType, ShiftStatus status);
 
     List<Shift> findByBranchIdAndShiftDateBetweenOrderByShiftDateAscPlannedStartAsc(
             Integer branchId, LocalDate startDate, LocalDate endDate);

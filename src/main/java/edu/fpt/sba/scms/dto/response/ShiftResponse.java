@@ -35,6 +35,10 @@ public record ShiftResponse(
         Integer previousShiftId,
         BigDecimal previousClosingCash,
         BigDecimal openingVariance,
-        String openingNote
+        String openingNote,
+        Integer activeCashierId,
+        String activeCashierName,
+        boolean handoverPending,
+        ShiftHandoverResponse pendingHandover
 ) {
 }

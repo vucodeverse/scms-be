@@ -29,8 +29,8 @@ import edu.fpt.sba.scms.model.Order;
 import edu.fpt.sba.scms.model.Payment;
 import edu.fpt.sba.scms.model.PaymentConfig;
 import edu.fpt.sba.scms.model.PaymentWebhookLog;
+import edu.fpt.sba.scms.model.Shift;
 import edu.fpt.sba.scms.repository.OrderRepository;
-import edu.fpt.sba.scms.repository.PaymentConfigRepository;
 import edu.fpt.sba.scms.repository.PaymentRepository;
 import edu.fpt.sba.scms.repository.PaymentWebhookLogRepository;
 import edu.fpt.sba.scms.repository.ShiftRepository;
@@ -67,6 +67,7 @@ public class PaymentServiceImpl implements PaymentService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public OrderResponse createOrder(CreateOrderRequest request, UserPrincipal principal) {
+        ensureDrawerNotLockedForHandover(request.branchId());
         Order order = Order.builder()
                 .branchId(request.branchId())
                 .cashierId(principal != null ? principal.userId() : null)
@@ -94,6 +95,7 @@ public class PaymentServiceImpl implements PaymentService {
         if (order.isPaid()) {
             throw new BusinessRuleException(BusinessErrorCode.ORDER_FROZEN, "Đơn hàng đã được thanh toán trước đó.");
         }
+        ensureDrawerNotLockedForHandover(order.getBranchId());
 
         BigDecimal finalAmount = order.getFinalAmount() != null ? order.getFinalAmount() : BigDecimal.ZERO;
         BigDecimal cashReceived = request.cashReceived();
@@ -168,6 +170,7 @@ public class PaymentServiceImpl implements PaymentService {
         if (order.isPaid()) {
             throw new BusinessRuleException(BusinessErrorCode.ORDER_FROZEN, "Đơn hàng đã thanh toán thành công.");
         }
+        ensureDrawerNotLockedForHandover(order.getBranchId());
 
         PaymentConfig config = paymentConfigService.getInternalConfig();
 
@@ -379,6 +382,19 @@ public class PaymentServiceImpl implements PaymentService {
                 order,
                 pendingPayment,
                 "Chưa khởi tạo giao dịch thanh toán.");
+    }
+
+    private void ensureDrawerNotLockedForHandover(Integer branchId) {
+        if (branchId == null) {
+            return;
+        }
+        shiftRepository.findFirstByBranchIdAndStatusOrderByOpenedAtDesc(branchId, ShiftStatus.OPEN)
+                .filter(Shift::isHandoverPending)
+                .ifPresent(s -> {
+                    throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
+                            "Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca #" + s.getId()
+                                    + ". Vui lòng kiểm két nhận ca trước khi thanh toán.");
+                });
     }
 
     private void saveWebhookLog(Integer paymentId, String sepayRef, BigDecimal amount,

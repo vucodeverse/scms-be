@@ -113,6 +113,12 @@ public class Shift {
     @Column(name = "opening_note", length = 500)
     private String openingNote;
 
+    @Column(name = "active_cashier_id")
+    private Integer activeCashierId;
+
+    @Column(name = "handover_pending")
+    private Boolean handoverPending;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     private ShiftStatus status;
@@ -145,6 +151,9 @@ public class Shift {
         if (status == null) {
             status = ShiftStatus.SCHEDULED;
         }
+        if (handoverPending == null) {
+            handoverPending = Boolean.FALSE;
+        }
     }
 
     @PreUpdate
@@ -154,5 +163,9 @@ public class Shift {
 
     public boolean isOpen() {
         return status == ShiftStatus.OPEN;
+    }
+
+    public boolean isHandoverPending() {
+        return Boolean.TRUE.equals(handoverPending);
     }
 }

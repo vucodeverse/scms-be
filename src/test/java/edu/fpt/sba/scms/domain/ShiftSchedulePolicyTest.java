@@ -6,7 +6,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -54,8 +56,35 @@ class ShiftSchedulePolicyTest {
     void inferShiftType_infersCorrectType() {
         assertEquals(ShiftType.NIGHT, ShiftSchedulePolicy.inferShiftType(LocalTime.of(3, 0)));
         assertEquals(ShiftType.MORNING, ShiftSchedulePolicy.inferShiftType(LocalTime.of(7, 30)));
+        assertEquals(ShiftType.MORNING, ShiftSchedulePolicy.inferShiftType(LocalTime.of(12, 29)));
+        assertEquals(ShiftType.EVENING, ShiftSchedulePolicy.inferShiftType(LocalTime.of(12, 30)));
         assertEquals(ShiftType.EVENING, ShiftSchedulePolicy.inferShiftType(LocalTime.of(15, 0)));
+        assertEquals(ShiftType.EVENING, ShiftSchedulePolicy.inferShiftType(LocalTime.of(17, 59)));
+        assertEquals(ShiftType.NIGHT, ShiftSchedulePolicy.inferShiftType(LocalTime.of(18, 0)));
         assertEquals(ShiftType.NIGHT, ShiftSchedulePolicy.inferShiftType(LocalTime.of(22, 30)));
         assertEquals(ShiftType.MORNING, ShiftSchedulePolicy.inferShiftType(null));
+    }
+
+    @Test
+    @DisplayName("resolveAdHocPlannedEnd: Trả đúng giờ kết thúc chuẩn theo ca hoặc +5h khi ngoài giờ")
+    void resolveAdHocPlannedEnd_returnsExpectedEnd() {
+        ZoneId vn = ZoneId.of("Asia/Ho_Chi_Minh");
+        LocalDate day = LocalDate.of(2026, 11, 9);
+
+        Instant morningNow = day.atTime(7, 15).atZone(vn).toInstant();
+        assertEquals(day.atTime(12, 30).atZone(vn).toInstant(),
+                ShiftSchedulePolicy.resolveAdHocPlannedEnd(ShiftType.MORNING, day, morningNow, vn));
+
+        Instant eveningNow = day.atTime(13, 0).atZone(vn).toInstant();
+        assertEquals(day.atTime(18, 0).atZone(vn).toInstant(),
+                ShiftSchedulePolicy.resolveAdHocPlannedEnd(ShiftType.EVENING, day, eveningNow, vn));
+
+        Instant nightNow = day.atTime(19, 0).atZone(vn).toInstant();
+        assertEquals(day.atTime(23, 0).atZone(vn).toInstant(),
+                ShiftSchedulePolicy.resolveAdHocPlannedEnd(ShiftType.NIGHT, day, nightNow, vn));
+
+        Instant lateNightNow = day.atTime(23, 15).atZone(vn).toInstant();
+        assertEquals(lateNightNow.plus(5, ChronoUnit.HOURS),
+                ShiftSchedulePolicy.resolveAdHocPlannedEnd(ShiftType.NIGHT, day, lateNightNow, vn));
     }
 }
