@@ -40,7 +40,7 @@ public class ToppingController {
     @Operation(summary = "Danh sách topping", description = "Không phân trang — FE dùng cho dropdown chọn topping.")
     @ApiResponse(responseCode = "200", description = "OK")
     @GetMapping
-    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER')")
+    @PreAuthorize("permitAll()")
     public List<ToppingDto> list() {
         return toppingService.list();
     }

@@ -16,6 +16,15 @@ public record SyncConfigRequest(
         @Schema(description = "Đồng bộ chương trình khuyến mãi/voucher", example = "true")
         Boolean syncVouchers,
 
+        @Schema(description = "Danh sách ID danh mục được chọn (null hoặc rỗng = tất cả)", example = "[1, 2]")
+        List<Integer> categoryIds,
+
+        @Schema(description = "Danh sách ID sản phẩm được chọn (null hoặc rỗng = tất cả)", example = "[1, 2, 3]")
+        List<Integer> productIds,
+
+        @Schema(description = "Danh sách ID voucher được chọn (null hoặc rỗng = tất cả)", example = "[1, 2]")
+        List<Integer> voucherIds,
+
         @Schema(description = "Danh sách ID chi nhánh mục tiêu nhận đồng bộ", example = "[1, 2, 3]")
         @NotEmpty(message = "Danh sách chi nhánh mục tiêu không được để trống")
         List<Integer> targetBranchIds
