@@ -2,7 +2,6 @@ package edu.fpt.sba.scms.controller;
 
 import edu.fpt.sba.scms.dto.ApiErrorResponse;
 import edu.fpt.sba.scms.dto.PageResponse;
-import edu.fpt.sba.scms.dto.request.AssignBranchManagerRequest;
 import edu.fpt.sba.scms.dto.request.CreateBranchRequest;
 import edu.fpt.sba.scms.dto.request.SaveBranchRequest;
 import edu.fpt.sba.scms.dto.request.SaveBranchStatusRequest;
@@ -46,7 +45,7 @@ public class BranchController {
     @Operation(summary = "Danh sách chi nhánh (phân trang)",
             description = "Mặc định 10 phần tử/trang; sortBy: code|name|createdAt. posOnline = null khi chưa có heartbeat.")
     @GetMapping
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAuthority('COO')")
     public PageResponse<BranchDto> list(@ModelAttribute @Valid BranchListQuery query) {
         return PageResponse.of(branchService.list(query));
     }
@@ -65,7 +64,7 @@ public class BranchController {
     @Operation(summary = "Tạo chi nhánh")
     @ApiResponses({
             @ApiResponse(responseCode = "201", description = "Đã tạo"),
-            @ApiResponse(responseCode = "409", description = "DUPLICATE_CODE | RESOURCE_CONFLICT",
+            @ApiResponse(responseCode = "409", description = "DUPLICATE_CODE",
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -79,24 +78,6 @@ public class BranchController {
     @PreAuthorize("hasAuthority('COO')")
     public BranchDto update(@PathVariable Integer id, @RequestBody @Valid SaveBranchRequest request) {
         return branchService.update(id, request);
-    }
-
-    @Operation(summary = "Gắn / đổi / gỡ quản lý chi nhánh",
-            description = "Chỉ gắn tài khoản BRANCH_MANAGER đang ACTIVE và chưa phụ trách chi nhánh nào khác. "
-                    + "Truyền managerUserId = null để gỡ quản lý hiện tại.")
-    @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "OK"),
-            @ApiResponse(responseCode = "400", description = "VALIDATION_ERROR",
-                    content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
-            @ApiResponse(responseCode = "404", description = "RESOURCE_NOT_FOUND",
-                    content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
-            @ApiResponse(responseCode = "409", description = "RESOURCE_CONFLICT",
-                    content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
-    @PutMapping("/{id}/manager")
-    @PreAuthorize("hasAuthority('COO')")
-    public BranchDto assignManager(@PathVariable Integer id,
-                                   @RequestBody(required = false) @Valid AssignBranchManagerRequest request) {
-        return branchService.assignManager(id, request == null ? new AssignBranchManagerRequest(null) : request);
     }
 
     @Operation(summary = "Đổi trạng thái chi nhánh",

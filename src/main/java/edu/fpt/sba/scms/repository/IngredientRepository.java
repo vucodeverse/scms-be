@@ -12,17 +12,7 @@ public interface IngredientRepository extends JpaRepository<Ingredient, Long> {
 
     List<Ingredient> findAllByStatusOrderByNameAsc(String status);
 
-    List<Ingredient> findAllByOrderByNameAsc();
-
-    List<Ingredient> findByNameContainingIgnoreCaseOrderByNameAsc(String keyword);
-
-    List<Ingredient> findAllByStatusAndNameContainingIgnoreCaseOrderByNameAsc(String status, String keyword);
-
     Optional<Ingredient> findByName(String name);
 
     boolean existsByName(String name);
-
-    boolean existsByNameIgnoreCase(String name);
-
-    boolean existsByNameIgnoreCaseAndIdNot(String name, Long id);
 }

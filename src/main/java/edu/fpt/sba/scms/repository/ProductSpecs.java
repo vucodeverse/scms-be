@@ -19,7 +19,7 @@ public final class ProductSpecs {
     /** @param keyword tìm theo tên sản phẩm hoặc tên danh mục; null/rỗng = không lọc */
     public static Specification<Product> filter(String keyword, Integer categoryId, ProductStatus status) {
         return allOf(
-                containsWhenPresent(keyword, TextMatch.of("name")),
+                containsWhenPresent(keyword, TextMatch.of("name"), TextMatch.joined("category", "name")),
                 equalWhenPresent("categoryId", categoryId),
                 equalWhenPresent("status", status));
     }

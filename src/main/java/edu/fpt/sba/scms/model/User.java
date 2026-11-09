@@ -31,7 +31,7 @@ public class User {
     @Column(name = "user_id")
     private Integer id;
 
-    /** NULL với COO hoặc BRANCH_MANAGER chưa gắn chi nhánh. */
+    /** NULL chỉ với COO. */
     @Column(name = "branch_id")
     private Integer branchId;
 

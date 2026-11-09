@@ -62,7 +62,7 @@ public class PaymentController {
             @ApiResponse(responseCode = "422", description = "Đơn hàng đã thanh toán hoặc tiền đưa không đủ",
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @PostMapping("/cash")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER', 'STAFF')")
     public CashPaymentResponse processCashPayment(
             @RequestBody @Valid ProcessCashPaymentRequest request,
             @AuthenticationPrincipal UserPrincipal principal) {
@@ -78,7 +78,7 @@ public class PaymentController {
             @ApiResponse(responseCode = "422", description = "Đơn hàng đã thanh toán trước đó",
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @PostMapping("/vietqr")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER', 'STAFF')")
     public VietQrResponse generateVietQr(
             @RequestBody @Valid GenerateQrRequest request,
             @AuthenticationPrincipal UserPrincipal principal) {
@@ -88,7 +88,7 @@ public class PaymentController {
     @Operation(summary = "Kiểm tra trạng thái thanh toán của đơn hàng (UC20)",
             description = "Dành cho màn hình Thu ngân POS kiểm tra trạng thái đơn hàng đã được SePay thanh toán thành công hay chưa.")
     @GetMapping("/orders/{orderId}/status")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER', 'STAFF')")
     public PaymentStatusResponse getPaymentStatus(@PathVariable Integer orderId) {
         return paymentService.getPaymentStatus(orderId);
     }

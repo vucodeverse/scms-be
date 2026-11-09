@@ -13,17 +13,16 @@ import java.util.List;
 @Mapper(componentModel = "spring")
 public interface BranchMapper {
 
-    @Mapping(target = "managerUserId", source = "managerUserId")
+    @Mapping(target = "managerUserId", source = "branch.managerId")
     @Mapping(target = "managerName", source = "managerName")
     @Mapping(target = "employeeCount", source = "employeeCount")
     @Mapping(target = "posOnline", expression = "java(null)")
-    BranchDto toDto(Branch branch, Integer managerUserId, String managerName, long employeeCount);
+    BranchDto toDto(Branch branch, String managerName, long employeeCount);
 
-    @Mapping(target = "managerUserId", source = "managerUserId")
+    @Mapping(target = "managerUserId", source = "branch.managerId")
     @Mapping(target = "managerName", source = "managerName")
     @Mapping(target = "employeeCount", source = "employeeCount")
     @Mapping(target = "posOnline", expression = "java(null)")
     @Mapping(target = "employees", source = "employees")
-    BranchDetailDto toDetail(Branch branch, Integer managerUserId, String managerName,
-            long employeeCount, List<UserDto> employees);
+    BranchDetailDto toDetail(Branch branch, String managerName, long employeeCount, List<UserDto> employees);
 }

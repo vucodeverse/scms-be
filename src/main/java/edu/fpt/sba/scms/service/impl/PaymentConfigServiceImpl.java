@@ -108,9 +108,9 @@ public class PaymentConfigServiceImpl implements PaymentConfigService {
     private PaymentConfig getOrCreateDefault() {
         return paymentConfigRepository.findFirstByOrderByIdAsc().orElseGet(() -> {
             PaymentConfig defaultConfig = PaymentConfig.builder()
-                    .bankName("VPBank")
-                    .accountNumber("999907122004")
-                    .accountHolder("TRAN VIET ANH")
+                    .bankName("MBBank")
+                    .accountNumber("0987654321")
+                    .accountHolder("CONG TY CP SCMS CAFE")
                     .paymentPrefix("CAFE")
                     .apiToken("sepay_sandbox_token_default_123456")
                     .webhookUrl("https://api.scms.vn/api/v1/webhooks/sepay")

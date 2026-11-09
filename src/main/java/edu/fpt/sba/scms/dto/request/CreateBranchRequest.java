@@ -56,8 +56,5 @@ public record CreateBranchRequest(
         Integer tableCount,
 
         @NotNull(message = "Trạng thái là bắt buộc.")
-        BranchStatus status,
-
-        @Schema(description = "ID tài khoản BRANCH_MANAGER chưa gắn chi nhánh phụ trách (tùy chọn)")
-        Integer managerUserId) {
+        BranchStatus status) {
 }

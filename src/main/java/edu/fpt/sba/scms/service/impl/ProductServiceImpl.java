@@ -14,6 +14,8 @@ import edu.fpt.sba.scms.dto.request.query.ProductListQuery;
 import edu.fpt.sba.scms.dto.response.ProductDetailDto;
 import edu.fpt.sba.scms.dto.response.ProductDto;
 import edu.fpt.sba.scms.dto.response.RecipeLineDto;
+import edu.fpt.sba.scms.integration.inventory.IngredientLookupPort;
+import edu.fpt.sba.scms.integration.inventory.IngredientLookupPort.IngredientInfo;
 import edu.fpt.sba.scms.mapper.ProductMapper;
 import edu.fpt.sba.scms.model.Category;
 import edu.fpt.sba.scms.model.Product;
@@ -23,9 +25,9 @@ import edu.fpt.sba.scms.repository.ProductRepository;
 import edu.fpt.sba.scms.repository.ProductSizeRepository;
 import edu.fpt.sba.scms.repository.ProductToppingRepository;
 import edu.fpt.sba.scms.repository.ProductSpecs;
+import edu.fpt.sba.scms.repository.RecipeReadRepository;
 import edu.fpt.sba.scms.repository.ToppingRepository;
 import edu.fpt.sba.scms.service.ProductService;
-import edu.fpt.sba.scms.service.RecipeService;
 import edu.fpt.sba.scms.service.support.MasterDataQueries;
 import edu.fpt.sba.scms.service.support.MasterDataText;
 import edu.fpt.sba.scms.service.support.ProductAssembler;
@@ -64,7 +66,8 @@ public class ProductServiceImpl implements ProductService {
     private final CategoryRepository categoryRepository;
     private final ToppingRepository toppingRepository;
     private final ProductToppingRepository productToppingRepository;
-    private final RecipeService recipeService;
+    private final RecipeReadRepository recipeReadRepository;
+    private final IngredientLookupPort ingredientLookupPort;
     private final ProductMapper productMapper;
     private final ProductAssembler productAssembler;
     private final AuditLogService auditLogService;
@@ -196,7 +199,36 @@ public class ProductServiceImpl implements ProductService {
     @Transactional(readOnly = true)
     public List<RecipeLineDto> recipe(Integer id, ProductSizeName size) {
         requireProductExists(id);
-        return recipeService.listRecipeLines(id, size);
+        List<RecipeRow> rows = recipeReadRepository.findRecipe(id, size == null ? null : size.name())
+                .stream()
+                .map(RecipeRow::of)
+                .toList();
+        if (rows.isEmpty()) {
+            return List.of();
+        }
+        Map<Integer, IngredientInfo> ingredients = ingredientLookupPort.findByIds(
+                rows.stream().map(RecipeRow::ingredientId).distinct().toList());
+
+        return rows.stream()
+                .map(row -> toRecipeLine(row, ingredients.get(row.ingredientId())))
+                .toList();
+    }
+
+    private static RecipeLineDto toRecipeLine(RecipeRow row, IngredientInfo ingredient) {
+        return new RecipeLineDto(row.ingredientId(),
+                ingredient == null ? null : ingredient.name(),
+                ingredient == null ? null : ingredient.baseUnit(),
+                row.quantityBase(),
+                row.sizeName() == null ? null : ProductSizeName.valueOf(row.sizeName()));
+    }
+
+    /** Dòng SQL gốc: {@code [ingredient_id, quantity_base, size]}. */
+    private record RecipeRow(int ingredientId, BigDecimal quantityBase, String sizeName) {
+
+        static RecipeRow of(Object[] row) {
+            return new RecipeRow(((Number) row[0]).intValue(), (BigDecimal) row[1],
+                    row[2] == null ? null : row[2].toString());
+        }
     }
 
     /** Topping gửi lên phải tồn tại và không trùng — báo lỗi đầu vào thay vì để FK/UNIQUE ném 500. */

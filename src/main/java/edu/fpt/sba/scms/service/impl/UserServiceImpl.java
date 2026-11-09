@@ -2,7 +2,6 @@ package edu.fpt.sba.scms.service.impl;
 
 import edu.fpt.sba.scms.common.audit.AuditLogService;
 import edu.fpt.sba.scms.common.enums.AuditAction;
-import edu.fpt.sba.scms.common.enums.BranchStatus;
 import edu.fpt.sba.scms.common.enums.BusinessErrorCode;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
 import edu.fpt.sba.scms.common.enums.Roles;
@@ -89,13 +88,11 @@ public class UserServiceImpl implements UserService {
     @Override
     @Transactional(readOnly = true)
     public Page<UserDto> list(UserListQuery query) {
-        UserPrincipal actor = currentActor();
         Integer branchId = scopedBranch(query.branchId(), null);
-        Boolean unassigned = resolveUnassignedScope(actor, query.unassigned(), branchId);
         Sort sort = MasterDataQueries.sort(query.sortBy(), query.sortDir(), SORTS, DEFAULT_SORT);
         Page<User> page = userRepository.findAll(
                 UserSpecs.managedList(query.keyword(), MasterDataText.trimToNull(query.role()), branchId,
-                        query.status(), unassigned),
+                        query.status()),
                 MasterDataQueries.pageable(query.page(), query.size(), sort));
         return page.map(user -> toDto(user, null));
     }
@@ -120,7 +117,7 @@ public class UserServiceImpl implements UserService {
     // ------------------------------------------------------------------ write
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional
     public UserDto create(SaveUserRequest request, UserPrincipal actor) {
         Roles position = request.position();
         boolean selfIsCoo = isCoo(actor);
@@ -153,19 +150,14 @@ public class UserServiceImpl implements UserService {
         applyPin(user, branchId, request.pin(), true);
         applyCard(user, request.cardCode(), null);
 
-        Branch assignedBranch = resolveInitialManagerBranch(position, branchId, request.status());
         userRepository.save(user);
-        if (assignedBranch != null) {
-            assignedBranch.setManagerId(user.getId());
-            branchRepository.save(assignedBranch);
-        }
         audit(position == Roles.BRANCH_MANAGER ? AuditAction.MANAGER_CREATE : AuditAction.EMPLOYEE_CREATE,
                 user.getId(), null, snapshot(user));
-        return toDto(user, assignedBranch == null ? null : assignedBranch.getName());
+        return toDto(user, null);
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional
     public UserDto update(Integer id, SaveUserRequest request, UserPrincipal actor) {
         User user = lockScopedUser(id);
         ensureNotSelf(actor, user, "chức danh/chi nhánh của chính mình");
@@ -216,10 +208,6 @@ public class UserServiceImpl implements UserService {
             ensureNotLastCoo(user, "ngừng hoạt động");
             refreshTokenStore.revokeAllOfUser(user.getId());
         }
-        if ((deactivated && user.getPosition() == Roles.BRANCH_MANAGER)
-                || (previousPosition == Roles.BRANCH_MANAGER && user.getPosition() != Roles.BRANCH_MANAGER)) {
-            detachManagerFromBranch(user, previousPosition == Roles.BRANCH_MANAGER && user.getPosition() == Roles.BRANCH_MANAGER);
-        }
 
         userRepository.save(user);
         audit(roleChanged ? AuditAction.ROLE_ASSIGN
@@ -229,7 +217,7 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional
     public UserDto changeStatus(Integer id, SaveUserStatusRequest request, UserPrincipal actor) {
         User user = lockScopedUser(id);
         ensureNotSelf(actor, user, "tài khoản của chính mình");
@@ -238,15 +226,9 @@ public class UserServiceImpl implements UserService {
         }
         Object before = snapshot(user);
         boolean deactivated = request.status() != UserStatus.ACTIVE && user.getStatus() == UserStatus.ACTIVE;
-        boolean activated = request.status() == UserStatus.ACTIVE && user.getStatus() != UserStatus.ACTIVE;
         user.setStatus(request.status());
         if (deactivated) {
             refreshTokenStore.revokeAllOfUser(user.getId());
-            if (user.getPosition() == Roles.BRANCH_MANAGER) {
-                detachManagerFromBranch(user, true);
-            }
-        } else if (activated && user.getPosition() == Roles.BRANCH_MANAGER && user.getBranchId() != null) {
-            user.setBranchId(null);
         }
         userRepository.save(user);
         audit(AuditAction.EMPLOYEE_STATUS, user.getId(), before, snapshot(user));
@@ -254,7 +236,7 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional
     public UserDto assignRole(Integer id, AssignRoleRequest request, UserPrincipal actor) {
         User user = lockScopedUser(id);
         ensureNotSelf(actor, user, "role của chính mình");
@@ -280,7 +262,7 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
+    @Transactional
     public void resetPassword(Integer id, ResetPasswordRequest request, UserPrincipal actor) {
         User user = lockScopedUser(id);
         if (!isCoo(actor) && !Objects.equals(user.getBranchId(), actor.branchId())) {
@@ -298,69 +280,6 @@ public class UserServiceImpl implements UserService {
     }
 
     // ------------------------------------------------------------------ helpers
-
-    /**
-     * Khi tạo mới {@code BRANCH_MANAGER} kèm {@code branchId != null}: khoá chi nhánh và giữ bất biến
-     * 1 chi nhánh chỉ có 1 quản lý chính đang hoạt động. Nếu {@code branchId == null}, quản lý nằm ở danh sách chờ gắn.
-     */
-    private Branch resolveInitialManagerBranch(Roles position, Integer branchId, UserStatus status) {
-        if (position != Roles.BRANCH_MANAGER || branchId == null) {
-            return null;
-        }
-        if (status != UserStatus.ACTIVE) {
-            throw new InvalidFieldValueException("branchId",
-                    "Tài khoản quản lý ngừng hoạt động không thể gắn vào chi nhánh.");
-        }
-        Branch branch = branchRepository.lockById(branchId)
-                .orElseThrow(() -> new InvalidFieldValueException("branchId", "Chi nhánh không tồn tại."));
-        if (branch.getStatus() == BranchStatus.INACTIVE) {
-            throw new InvalidFieldValueException("branchId",
-                    "Không thể gắn quản lý cho chi nhánh đã ngừng hoạt động.");
-        }
-        boolean hasActiveManager = branch.getManagerId() != null
-                && userRepository.findById(branch.getManagerId()).filter(User::isActive).isPresent();
-        if (hasActiveManager) {
-            throw new ConflictException(ErrorCode.RESOURCE_CONFLICT,
-                    "Chi nhánh đã có quản lý phụ trách. Vui lòng đổi quản lý trong màn hình chi nhánh.");
-        }
-        return branch;
-    }
-
-    /** Gỡ liên kết quản lý ở chi nhánh khi tài khoản quản lý bị ngừng hoạt động hoặc đổi sang chức danh khác. */
-    private void detachManagerFromBranch(User user, boolean clearUserBranch) {
-        Integer oldBranchId = user.getBranchId();
-        if (oldBranchId != null) {
-            branchRepository.lockById(oldBranchId).ifPresent(branch -> {
-                if (Objects.equals(branch.getManagerId(), user.getId())) {
-                    branch.setManagerId(null);
-                    branchRepository.save(branch);
-                }
-            });
-        }
-        if (clearUserBranch) {
-            user.setBranchId(null);
-            user.setPinHash(null);
-            user.setPinLookupHash(null);
-            user.setPinSetAt(null);
-        }
-    }
-
-    private static Boolean resolveUnassignedScope(UserPrincipal actor, Boolean unassigned, Integer branchId) {
-        if (unassigned == null) {
-            return null;
-        }
-        if (!isCoo(actor)) {
-            if (Boolean.TRUE.equals(unassigned)) {
-                throw new ForbiddenException(ErrorCode.CROSS_BRANCH_DENIED);
-            }
-            return null;
-        }
-        if (branchId != null && Boolean.TRUE.equals(unassigned)) {
-            throw new InvalidFieldValueException("unassigned",
-                    "Không thể lọc đồng thời chi nhánh và chưa gắn chi nhánh.");
-        }
-        return unassigned;
-    }
 
     /** Branch scope: BM luôn dùng chi nhánh của mình; COO dùng tham số (có thể null = mọi chi nhánh). */
     private Integer scopedBranch(Integer requestedBranchId, String field) {
@@ -538,9 +457,8 @@ public class UserServiceImpl implements UserService {
         return actor != null && Roles.COO.code().equals(actor.role());
     }
 
-    /** COO và BM mới tạo chưa gắn chi nhánh được phép có {@code branchId == null}; nhân sự ca bắt buộc chọn chi nhánh. */
     private static boolean positionsNeedsBranch(Roles position) {
-        return position != Roles.COO && position != Roles.BRANCH_MANAGER;
+        return position != Roles.COO;
     }
 
     private static String lowerOrNull(String email) {
