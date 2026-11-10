@@ -12,11 +12,14 @@ public record AttendanceResultDto(
         String employeeName,
         String role,
         Integer branchId,
+        Integer shiftId,
+        String shiftLabel,
         Instant checkInTime,
         Instant checkOutTime,
         Long workedMinutes,
         AttendanceStatus status,
-        String message
+        String message,
+        Boolean flaggedForgotCheckout
 ) {
 }
 

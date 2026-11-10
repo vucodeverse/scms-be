@@ -1,13 +1,20 @@
 package edu.fpt.sba.scms.controller;
 
+import edu.fpt.sba.scms.common.enums.AttendanceStatus;
 import edu.fpt.sba.scms.common.enums.Roles;
+import edu.fpt.sba.scms.common.enums.ShiftStatus;
+import edu.fpt.sba.scms.common.enums.ShiftType;
 import edu.fpt.sba.scms.common.enums.UserStatus;
 import edu.fpt.sba.scms.common.util.DateTimeUtil;
+import edu.fpt.sba.scms.model.Attendance;
 import edu.fpt.sba.scms.model.Role;
 import edu.fpt.sba.scms.model.Shift;
+import edu.fpt.sba.scms.model.ShiftAssignment;
+import edu.fpt.sba.scms.model.ShiftAssignmentId;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.AttendanceRepository;
 import edu.fpt.sba.scms.repository.RoleRepository;
+import edu.fpt.sba.scms.repository.ShiftAssignmentRepository;
 import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -26,10 +33,15 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.ZoneId;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -56,6 +68,9 @@ class AttendanceAndRoleIT {
 
     @Autowired
     private ShiftRepository shiftRepository;
+
+    @Autowired
+    private ShiftAssignmentRepository shiftAssignmentRepository;
 
     @Autowired
     private UserRepository userRepository;
@@ -481,6 +496,154 @@ class AttendanceAndRoleIT {
                         .content("{\"employeeId\":" + empId + ",\"pin\":\"" + staffPin + "\",\"branchId\":" + branch1 + "}"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.status").value("CHECKED_IN"));
+    }
+
+    @Test
+    void double_shift_auto_completes_forgotten_earlier_shift() throws Exception {
+        String token = cooToken();
+        int seq = SEQ.incrementAndGet();
+        String branchCode = "BR-DS-" + seq;
+        int branchId = createBranch(token, branchCode);
+        String pin = "1234";
+        int empId = createStaff(token, branchId, "0977" + String.format("%06d", seq), pin, "CARD-DS-" + seq);
+        User emp = userRepository.findById(empId).orElseThrow();
+
+        LocalDate today = DateTimeUtil.todayVN();
+        ZoneId vn = DateTimeUtil.VN;
+        Instant morningStart = today.atTime(7, 0).atZone(vn).toInstant();
+        Instant morningEnd = today.atTime(12, 30).atZone(vn).toInstant();
+        Instant eveningStart = today.atTime(12, 30).atZone(vn).toInstant();
+        Instant eveningEnd = today.atTime(18, 0).atZone(vn).toInstant();
+
+        Shift morningShift = shiftRepository.save(Shift.builder()
+                .branchId(branchId)
+                .shiftDate(today)
+                .shiftType(ShiftType.MORNING)
+                .plannedStart(morningStart)
+                .plannedEnd(morningEnd)
+                .status(ShiftStatus.OPEN)
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(morningShift.getId(), empId))
+                .shift(morningShift)
+                .employee(emp)
+                .roleInShift(Roles.WAITER.code())
+                .isReplacement(false)
+                .build());
+
+        Shift eveningShift = shiftRepository.save(Shift.builder()
+                .branchId(branchId)
+                .shiftDate(today)
+                .shiftType(ShiftType.EVENING)
+                .plannedStart(eveningStart)
+                .plannedEnd(eveningEnd)
+                .status(ShiftStatus.SCHEDULED)
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(eveningShift.getId(), empId))
+                .shift(eveningShift)
+                .employee(emp)
+                .roleInShift(Roles.WAITER.code())
+                .isReplacement(false)
+                .build());
+
+        // 1. Check-in ca sáng
+        mockMvc.perform(post("/api/v1/attendance/check-in")
+                        .contentType(JSON)
+                        .content("{\"employeeId\":" + empId + ",\"pin\":\"" + pin + "\",\"branchId\":" + branchId + ",\"shiftId\":" + morningShift.getId() + "}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.shiftId").value(morningShift.getId()))
+                .andExpect(jsonPath("$.data.status").value("CHECKED_IN"));
+
+        // 1.5 Kiểm tra kiosk DTO cho nhân viên: khi ca sáng đã check-in nhưng ca chiều sắp tới/đang diễn ra,
+        // kiosk phải hiển thị ca chiều để check-in (isCheckedIn = false)
+        mockMvc.perform(get("/api/v1/attendance/kiosk/employees?branchId=" + branchId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.employeeId == " + empId + ")].isCheckedIn").value(hasItem(false)))
+                .andExpect(jsonPath("$.data[?(@.employeeId == " + empId + ")].shiftId").value(hasItem(eveningShift.getId())));
+
+        // 2. Check-in ca chiều khi chưa check-out ca sáng -> tự động đóng ca sáng và check-in ca chiều thành công
+        mockMvc.perform(post("/api/v1/attendance/check-in")
+                        .contentType(JSON)
+                        .content("{\"employeeId\":" + empId + ",\"pin\":\"" + pin + "\",\"branchId\":" + branchId + ",\"shiftId\":" + eveningShift.getId() + "}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.shiftId").value(eveningShift.getId()))
+                .andExpect(jsonPath("$.data.status").value("CHECKED_IN"));
+
+        // 3. Ca sáng đã tự động chuyển sang COMPLETED
+        Optional<Attendance> morningAtt = attendanceRepository.findFirstByUserIdAndShiftIdOrderByCheckInTimeDesc(empId, morningShift.getId());
+        assertTrue(morningAtt.isPresent());
+        assertEquals(AttendanceStatus.COMPLETED, morningAtt.get().getStatus());
+        assertNotNull(morningAtt.get().getCheckOutTime());
+
+        // 4. Ca chiều đang mở
+        Optional<Attendance> eveningAtt = attendanceRepository.findFirstByUserIdAndShiftIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(empId, eveningShift.getId());
+        assertTrue(eveningAtt.isPresent());
+        assertEquals(AttendanceStatus.CHECKED_IN, eveningAtt.get().getStatus());
+    }
+
+    @Test
+    void test_gracePeriodAndAutoCheckoutForgottenShift_success() throws Exception {
+        String token = cooToken();
+        int seq = SEQ.incrementAndGet();
+        int branchId = createBranch(token, "BG-" + seq);
+        String pin = "1234";
+        int empId = createStaff(token, branchId, "0978" + String.format("%06d", seq), pin, "GRACE" + seq);
+
+        Instant now = Instant.now();
+        // Ca 1: kết thúc cách đây 3 phút (vẫn trong thời gian ân hạn 10 phút)
+        Instant shift1Start = now.minus(Duration.ofHours(3));
+        Instant shift1End = now.minus(Duration.ofMinutes(3));
+        Shift shift1 = shiftRepository.save(Shift.builder()
+                .branchId(branchId)
+                .shiftDate(DateTimeUtil.todayVN())
+                .shiftType(ShiftType.MORNING)
+                .plannedStart(shift1Start)
+                .plannedEnd(shift1End)
+                .status(ShiftStatus.CLOSED)
+                .build());
+
+        // Ca 2: vừa bắt đầu cách đây 3 phút, đang OPEN
+        Shift shift2 = shiftRepository.save(Shift.builder()
+                .branchId(branchId)
+                .shiftDate(DateTimeUtil.todayVN())
+                .shiftType(ShiftType.EVENING)
+                .plannedStart(shift1End)
+                .plannedEnd(shift1End.plus(Duration.ofHours(5)))
+                .status(ShiftStatus.OPEN)
+                .build());
+
+        // Nhân viên đã check-in ca 1 từ lúc bắt đầu ca 1
+        Attendance att1 = attendanceRepository.save(Attendance.builder()
+                .userId(empId)
+                .branchId(branchId)
+                .shiftId(shift1.getId())
+                .checkInTime(shift1Start)
+                .workDate(DateTimeUtil.todayVN())
+                .status(AttendanceStatus.CHECKED_IN)
+                .method("PIN")
+                .build());
+
+        // 1. Khi ca 2 đang mở trên POS (truyền shiftId = shift2.getId()), nhân viên ca 1 chưa check-out
+        // trong vòng 10 phút ân hạn -> xuất hiện trong drop-down với isPreviousShiftUnclosed = true
+        mockMvc.perform(get("/api/v1/attendance/kiosk/employees?branchId=" + branchId + "&shiftId=" + shift2.getId() + "&onlyAssigned=true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.employeeId == " + empId + ")].isPreviousShiftUnclosed").value(hasItem(true)))
+                .andExpect(jsonPath("$.data[?(@.employeeId == " + empId + ")].isCheckedIn").value(hasItem(true)))
+                .andExpect(jsonPath("$.data[?(@.employeeId == " + empId + ")].shiftId").value(hasItem(shift1.getId())));
+
+        // 2. Tua thời gian: ca 1 kết thúc cách đây 15 phút (vượt quá 10 phút ân hạn)
+        shift1.setPlannedEnd(now.minus(Duration.ofMinutes(15)));
+        shiftRepository.save(shift1);
+
+        // Gọi lại API kiosk/employees -> hệ thống tự động chốt công cho ca 1 đúng giờ kết thúc ca và gán cờ
+        mockMvc.perform(get("/api/v1/attendance/kiosk/employees?branchId=" + branchId))
+                .andExpect(status().isOk());
+
+        Attendance updatedAtt1 = attendanceRepository.findById(att1.getId()).orElseThrow();
+        assertEquals(AttendanceStatus.COMPLETED, updatedAtt1.getStatus());
+        assertEquals(shift1.getPlannedEnd(), updatedAtt1.getCheckOutTime());
+        assertTrue(Boolean.TRUE.equals(updatedAtt1.getFlaggedForgotCheckout()));
     }
 
     private String loginToken(String username, String password) throws Exception {

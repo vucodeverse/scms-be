@@ -55,6 +55,13 @@ public class Attendance {
     @JoinColumn(name = "branch_id", insertable = false, updatable = false)
     private Branch branch;
 
+    @Column(name = "shift_id")
+    private Integer shiftId;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "shift_id", insertable = false, updatable = false)
+    private Shift shift;
+
     @Column(name = "check_in_time", nullable = false)
     private Instant checkInTime;
 
@@ -77,6 +84,9 @@ public class Attendance {
     @Column(name = "notes", length = 255)
     private String notes;
 
+    @Column(name = "flagged_forgot_checkout")
+    private Boolean flaggedForgotCheckout;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -97,6 +107,9 @@ public class Attendance {
         }
         if (status == null) {
             status = AttendanceStatus.CHECKED_IN;
+        }
+        if (flaggedForgotCheckout == null) {
+            flaggedForgotCheckout = Boolean.FALSE;
         }
     }
 

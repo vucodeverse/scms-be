@@ -717,6 +717,74 @@ class AuthFlowIT {
     }
 
     @Test
+    void branchManagerAssignedAsCashierInShift_appearsInCashierListAndCanPinLogin() throws Exception {
+        int seq = SEQ.incrementAndGet();
+        Branch branch = branchRepository.save(Branch.builder()
+                .code("BM-" + seq)
+                .name("Chi nhánh Quản lý làm Thu ngân " + seq)
+                .address("Địa chỉ " + seq)
+                .phone("090" + String.format("%07d", seq))
+                .status(BranchStatus.OPEN)
+                .build());
+
+        Role bmRole = roleRepository.findByCode(Roles.BRANCH_MANAGER.code())
+                .orElseGet(() -> roleRepository.save(Role.builder().code(Roles.BRANCH_MANAGER.code()).name("Quản lý chi nhánh").build()));
+
+        User manager = userRepository.save(User.builder()
+                .username("bm_cashier_" + seq)
+                .branchId(branch.getId())
+                .roleId(bmRole.getId())
+                .fullName("Quản lý kiêm Thu ngân")
+                .pinHash(pinHasher.hash("7788"))
+                .pinLookupHash(pinHasher.lookupHash(branch.getId(), "7788"))
+                .position(Roles.BRANCH_MANAGER)
+                .status(UserStatus.ACTIVE)
+                .build());
+
+        Instant now = Instant.now();
+        edu.fpt.sba.scms.model.Shift shift = shiftRepository.save(edu.fpt.sba.scms.model.Shift.builder()
+                .branchId(branch.getId())
+                .shiftDate(edu.fpt.sba.scms.common.util.DateTimeUtil.todayVN())
+                .shiftType(edu.fpt.sba.scms.common.enums.ShiftType.EVENING)
+                .plannedStart(now.minusSeconds(1800))
+                .plannedEnd(now.plusSeconds(18000))
+                .status(edu.fpt.sba.scms.common.enums.ShiftStatus.SCHEDULED)
+                .build());
+
+        shiftAssignmentRepository.save(edu.fpt.sba.scms.model.ShiftAssignment.builder()
+                .id(new edu.fpt.sba.scms.model.ShiftAssignmentId(shift.getId(), manager.getId()))
+                .shift(shift)
+                .employee(manager)
+                .roleInShift("CASHIER")
+                .build());
+
+        // 1. Kiểm tra /auth/cashiers trả về Quản lý được gán vai trò tạm CASHIER trong ca này
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + branch.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].employeeId", hasItem(manager.getId())))
+                .andExpect(jsonPath("$.data[*].fullName", hasItem("Quản lý kiêm Thu ngân")));
+
+        // 2. Quản lý đăng nhập bằng mã PIN 7788 thành công với vai trò CASHIER tại quầy POS
+        MvcResult res = mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"7788"}
+                                """.formatted(branch.getId(), manager.getId())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.user.role").value("CASHIER"))
+                .andReturn();
+
+        JsonNode json = objectMapper.readTree(res.getResponse().getContentAsString());
+        String token = json.at("/data/accessToken").asText();
+
+        // 3. /auth/me nhận diện quyền Thu ngân trong phiên PIN này
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.role").value("CASHIER"))
+                .andExpect(jsonPath("$.data.permissions", hasItem("SHIFT_OPEN")));
+    }
+
+    @Test
     void openApiAndSwaggerAreExposed() throws Exception {
         mockMvc.perform(get("/v3/api-docs"))
                 .andExpect(status().isOk())

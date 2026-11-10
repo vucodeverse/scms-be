@@ -103,6 +103,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -829,7 +830,7 @@ public class ShiftServiceImpl implements ShiftService {
                     ? autoCheckOutForUserId(uid, savedShift.getId(), now,
                             "Tự động check-out khi đóng ca #" + savedShift.getId())
                     : autoCheckOutIfBranchStaff(uid, savedShift.getId(), now,
-                            "Tự động check-out khi Quản lý đóng ca #" + savedShift.getId());
+                            "Tự động check-out khi đóng ca #" + savedShift.getId());
             if (mins != null) {
                 autoOutMinutesList.add(mins);
             }
@@ -2413,13 +2414,26 @@ public class ShiftServiceImpl implements ShiftService {
             shiftAssignmentRepository.save(existingSa);
         }
 
-        if (attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(cashierId).isPresent()) {
-            return false;
+        Optional<Attendance> existingOpenOpt = attendanceRepository
+                .findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(cashierId);
+        if (existingOpenOpt.isPresent()) {
+            Attendance existingOpen = existingOpenOpt.get();
+            if (savedShift.getId().equals(existingOpen.getShiftId())) {
+                return false;
+            }
+            long worked = AttendanceCalculator.calculateWorkedMinutes(existingOpen.getCheckInTime(), now);
+            existingOpen.setCheckOutTime(now);
+            existingOpen.setWorkedMinutes(worked);
+            existingOpen.setStatus(AttendanceStatus.COMPLETED);
+            String note = "Tự động check-out ca trước khi mở ca mới #" + savedShift.getId();
+            existingOpen.setNotes(StringUtils.hasText(existingOpen.getNotes()) ? existingOpen.getNotes() + "; " + note : note);
+            attendanceRepository.save(existingOpen);
         }
 
         Attendance attendance = Attendance.builder()
                 .userId(cashierId)
                 .branchId(savedShift.getBranchId())
+                .shiftId(savedShift.getId())
                 .workDate(DateTimeUtil.todayVN())
                 .method("PIN")
                 .checkInTime(now)
@@ -2468,13 +2482,21 @@ public class ShiftServiceImpl implements ShiftService {
     }
 
     private Long autoCheckOutForUserId(Integer userId, Integer shiftId, Instant now, String notePrefix) {
-        return attendanceRepository
-                .findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(userId)
+        Optional<Attendance> targetAtt = shiftId != null
+                ? attendanceRepository.findFirstByUserIdAndShiftIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(userId, shiftId)
+                : Optional.empty();
+        if (targetAtt.isEmpty()) {
+            targetAtt = attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(userId);
+        }
+        return targetAtt
                 .map(att -> {
                     long workedMinutes = AttendanceCalculator.calculateWorkedMinutes(att.getCheckInTime(), now);
                     att.setCheckOutTime(now);
                     att.setWorkedMinutes(workedMinutes);
                     att.setStatus(AttendanceStatus.COMPLETED);
+                    if (att.getShiftId() == null && shiftId != null) {
+                        att.setShiftId(shiftId);
+                    }
                     att.setNotes(StringUtils.hasText(att.getNotes())
                             ? truncate(att.getNotes() + "; " + notePrefix, 255)
                             : truncate(notePrefix, 255));
@@ -2490,7 +2512,7 @@ public class ShiftServiceImpl implements ShiftService {
         }
         User target = userRepository.findWithRoleAndBranchById(userId).orElse(null);
         if (target == null || target.getPosition() == null
-                || !UserDirectory.BRANCH_STAFF_ROLES.contains(target.getPosition())) {
+                || (!UserDirectory.BRANCH_STAFF_ROLES.contains(target.getPosition()) && target.getPosition() != Roles.BRANCH_MANAGER)) {
             return null;
         }
         return autoCheckOutForUserId(userId, shiftId, now, notePrefix);

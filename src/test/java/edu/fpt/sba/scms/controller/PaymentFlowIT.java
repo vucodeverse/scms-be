@@ -29,7 +29,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class PaymentFlowIT {
 
     private static final String JSON = MediaType.APPLICATION_JSON_VALUE;
-    private static final AtomicInteger SEQ = new AtomicInteger(500);
+    private static final AtomicInteger SEQ = new AtomicInteger(55000);
 
     @Autowired
     private MockMvc mockMvc;
@@ -59,8 +59,8 @@ class PaymentFlowIT {
                         .header("Authorization", "Bearer " + token)
                         .contentType(JSON)
                         .content("""
-                                {"code":"%s","name":"Chi nhánh %s","address":"1 Nguyen Trai","phone":"092%07d",
-                                 "email":"branch%s@scms.vn","openingTime":"07:00","closingTime":"22:00","tableCount":12,
+                                {"code":"%s","name":"Chi nhánh %s","address":"1 Nguyen Trai","phone":"098%07d",
+                                 "email":"branch_pay_%s@scms.vn","openingTime":"07:00","closingTime":"22:00","tableCount":12,
                                  "status":"OPEN"}""".formatted(code, code, SEQ.incrementAndGet(), code)))
                 .andExpect(status().isCreated())
                 .andReturn();

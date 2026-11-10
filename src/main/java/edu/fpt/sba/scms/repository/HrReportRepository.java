@@ -19,6 +19,8 @@ public interface HrReportRepository extends Repository<Attendance, Integer> {
     interface AttendanceRow {
         Integer getUserId();
 
+        Integer getShiftId();
+
         Instant getCheckIn();
 
         Instant getCheckOut();
@@ -47,7 +49,7 @@ public interface HrReportRepository extends Repository<Attendance, Integer> {
     }
 
     @Query("""
-            select a.userId as userId, a.checkInTime as checkIn, a.checkOutTime as checkOut,
+            select a.userId as userId, a.shiftId as shiftId, a.checkInTime as checkIn, a.checkOutTime as checkOut,
                    a.workedMinutes as workedMinutes
             from Attendance a
             where a.branchId = :branchId and a.checkInTime >= :start and a.checkInTime < :end
