@@ -37,11 +37,15 @@ public class AttendanceController {
 
     private final AttendanceService attendanceService;
 
-    @Operation(summary = "Danh sách nhân viên Kiosk",
-            description = "Lấy danh sách nhân viên đang hoạt động của chi nhánh để hiển thị trên màn hình chọn Kiosk.")
+    @Operation(summary = "Danh sách nhân viên Kiosk / POS Check-in",
+            description = "Lấy danh sách nhân viên đang hoạt động của chi nhánh để hiển thị trên màn hình chọn Kiosk hoặc quầy POS.")
     @GetMapping("/kiosk/employees")
-    public List<KioskEmployeeDto> kioskEmployees(@RequestParam Integer branchId) {
-        return attendanceService.getKioskEmployees(branchId);
+    public List<KioskEmployeeDto> kioskEmployees(
+            @RequestParam Integer branchId,
+            @RequestParam(required = false) Integer shiftId,
+            @RequestParam(required = false) Boolean onlyAssigned,
+            @RequestParam(required = false) Boolean excludeCashier) {
+        return attendanceService.getKioskEmployees(branchId, shiftId, onlyAssigned, excludeCashier);
     }
 
     @Operation(summary = "Check-in vào ca bằng PIN (UC03)",

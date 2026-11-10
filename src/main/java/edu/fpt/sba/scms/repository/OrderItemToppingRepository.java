@@ -8,4 +8,6 @@ import java.util.List;
 public interface OrderItemToppingRepository extends JpaRepository<OrderItemTopping, Integer> {
 
     List<OrderItemTopping> findByOrderLineId(Integer orderLineId);
+
+    boolean existsByToppingId(Integer toppingId);
 }

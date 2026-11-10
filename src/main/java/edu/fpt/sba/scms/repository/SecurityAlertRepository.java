@@ -38,4 +38,9 @@ public interface SecurityAlertRepository extends JpaRepository<SecurityAlert, In
             Integer branchId,
             SecurityAlertType alertType,
             Collection<SecurityAlertStatus> statuses);
+
+    List<SecurityAlert> findByReferenceShiftIdAndAlertTypeAndStatusIn(
+            Integer referenceShiftId,
+            SecurityAlertType alertType,
+            Collection<SecurityAlertStatus> statuses);
 }

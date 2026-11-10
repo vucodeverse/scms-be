@@ -41,7 +41,7 @@ public class SyncConfigController {
     @Operation(summary = "Xem trước toàn bộ dữ liệu cấu hình chuỗi sẵn sàng đồng bộ (UC14)",
             description = "Trả về danh sách chi nhánh, danh mục, món ăn kèm đầy đủ bảng giá size và voucher.")
     @GetMapping("/preview")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAuthority('COO')")
     public SyncPreviewDto getSyncPreview() {
         return syncConfigService.getSyncPreview();
     }
@@ -49,7 +49,7 @@ public class SyncConfigController {
     @Operation(summary = "Danh sách món ăn & bảng giá phục vụ đồng bộ (UC14)",
             description = "Trả về danh sách tất cả các món ăn kèm giá các size (S, M, L) và topping để COO chọn món đồng bộ.")
     @GetMapping("/products")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAuthority('COO')")
     public List<ProductDto> getSyncableProducts() {
         return syncConfigService.getSyncableProducts();
     }
@@ -61,7 +61,7 @@ public class SyncConfigController {
             @ApiResponse(responseCode = "404", description = "Không tìm thấy chi nhánh mục tiêu",
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @PostMapping
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAuthority('COO')")
     public SyncConfigResponse syncToBranches(
             @RequestBody @Valid SyncConfigRequest request,
             @AuthenticationPrincipal UserPrincipal principal) {

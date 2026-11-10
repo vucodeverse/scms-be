@@ -2,8 +2,11 @@ package edu.fpt.sba.scms.service.impl;
 
 import edu.fpt.sba.scms.common.audit.AuditLogService;
 import edu.fpt.sba.scms.common.enums.AuditAction;
+import edu.fpt.sba.scms.common.enums.BranchStatus;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
 import edu.fpt.sba.scms.common.enums.Roles;
+import edu.fpt.sba.scms.common.enums.ShiftHandoverStatus;
+import edu.fpt.sba.scms.common.enums.ShiftStatus;
 import edu.fpt.sba.scms.common.enums.UserStatus;
 import edu.fpt.sba.scms.common.exception.ForbiddenException;
 import edu.fpt.sba.scms.common.exception.InvalidFieldValueException;
@@ -11,18 +14,27 @@ import edu.fpt.sba.scms.common.exception.InvalidPinException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
 import edu.fpt.sba.scms.common.exception.PinLockedException;
 import edu.fpt.sba.scms.common.exception.UnauthorizedException;
+import edu.fpt.sba.scms.common.util.DateTimeUtil;
 import edu.fpt.sba.scms.common.util.Messages;
+import edu.fpt.sba.scms.domain.shift.ShiftSchedulePolicy;
 import edu.fpt.sba.scms.dto.request.LoginRequest;
 import edu.fpt.sba.scms.dto.request.PinLoginRequest;
 import edu.fpt.sba.scms.dto.request.RefreshRequest;
 import edu.fpt.sba.scms.dto.response.AuthUserDto;
 import edu.fpt.sba.scms.dto.response.CashierPinOptionDto;
 import edu.fpt.sba.scms.dto.response.CurrentUserResponse;
+import edu.fpt.sba.scms.dto.response.KioskBranchDto;
 import edu.fpt.sba.scms.dto.response.LoginResponse;
 import edu.fpt.sba.scms.dto.response.TokenResponse;
 import edu.fpt.sba.scms.model.AuthToken;
+import edu.fpt.sba.scms.model.Branch;
+import edu.fpt.sba.scms.model.Shift;
+import edu.fpt.sba.scms.model.ShiftAssignment;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.BranchRepository;
+import edu.fpt.sba.scms.repository.ShiftAssignmentRepository;
+import edu.fpt.sba.scms.repository.ShiftHandoverRepository;
+import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
 import edu.fpt.sba.scms.security.PermissionCatalog;
 import edu.fpt.sba.scms.security.jwt.JwtTokenProvider;
@@ -35,7 +47,9 @@ import edu.fpt.sba.scms.service.support.PinHasher;
 import edu.fpt.sba.scms.service.support.PinLockoutService;
 import edu.fpt.sba.scms.service.support.RefreshRateLimiter;
 import edu.fpt.sba.scms.service.support.RefreshTokenStore;
+import edu.fpt.sba.scms.service.support.UserDirectory;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Sort;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,8 +57,14 @@ import org.springframework.util.StringUtils;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -69,6 +89,9 @@ public class AuthServiceImpl implements AuthService {
 
     private final UserRepository userRepository;
     private final BranchRepository branchRepository;
+    private final ShiftRepository shiftRepository;
+    private final ShiftAssignmentRepository shiftAssignmentRepository;
+    private final ShiftHandoverRepository shiftHandoverRepository;
     private final PasswordEncoder passwordEncoder;
     private final PinHasher pinHasher;
     private final PinLockoutService pinLockoutService;
@@ -90,6 +113,9 @@ public class AuthServiceImpl implements AuthService {
 
     public AuthServiceImpl(UserRepository userRepository,
                            BranchRepository branchRepository,
+                           ShiftRepository shiftRepository,
+                           ShiftAssignmentRepository shiftAssignmentRepository,
+                           ShiftHandoverRepository shiftHandoverRepository,
                            PasswordEncoder passwordEncoder,
                            PinHasher pinHasher,
                            PinLockoutService pinLockoutService,
@@ -101,6 +127,9 @@ public class AuthServiceImpl implements AuthService {
                            AuditLogService auditLogService) {
         this.userRepository = userRepository;
         this.branchRepository = branchRepository;
+        this.shiftRepository = shiftRepository;
+        this.shiftAssignmentRepository = shiftAssignmentRepository;
+        this.shiftHandoverRepository = shiftHandoverRepository;
         this.passwordEncoder = passwordEncoder;
         this.pinHasher = pinHasher;
         this.pinLockoutService = pinLockoutService;
@@ -135,20 +164,48 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     @Transactional(readOnly = true)
+    public List<KioskBranchDto> listPublicBranches(String keyword) {
+        String normalized = StringUtils.hasText(keyword) ? keyword.trim().toLowerCase(Locale.ROOT) : null;
+        return branchRepository.findAll(Sort.by(Sort.Order.asc("code"))).stream()
+                .filter(b -> b.getStatus() != BranchStatus.INACTIVE)
+                .filter(b -> normalized == null
+                        || (b.getCode() != null && b.getCode().toLowerCase(Locale.ROOT).contains(normalized))
+                        || (b.getName() != null && b.getName().toLowerCase(Locale.ROOT).contains(normalized)))
+                .map(b -> new KioskBranchDto(b.getId(), b.getCode(), b.getName(), b.getStatus()))
+                .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<CashierPinOptionDto> listCashierPinOptions(Integer branchId) {
         if (branchId == null) {
             throw new InvalidFieldValueException("branchId", "Chi nhánh không được để trống.");
         }
-        if (!branchRepository.existsById(branchId)) {
-            throw new NotFoundException("chi nhánh");
+        Branch branch = branchRepository.findById(branchId)
+                .orElseThrow(() -> new NotFoundException("chi nhánh"));
+        if (branch.getStatus() == BranchStatus.INACTIVE) {
+            throw new ForbiddenException(ErrorCode.ACCESS_DENIED, "Chi nhánh đã ngừng hoạt động.");
         }
 
         List<User> activeUsers = userRepository.findAllByBranchIdAndStatus(branchId, UserStatus.ACTIVE);
-        Map<Integer, Instant> activeLocks = pinLockoutService.findActiveEmployeeLocks(branchId);
-        Instant now = Instant.now();
+        Map<Integer, User> activeById = new LinkedHashMap<>();
+        for (User u : activeUsers) {
+            activeById.put(u.getId(), u);
+        }
 
-        return activeUsers.stream()
-                .filter(u -> Roles.CASHIER.code().equals(u.roleCode()))
+        // Chỉ hiển thị nhân sự có vai trò Thu ngân (gốc hoặc kiêm CASHIER trong chính ca đang xét):
+        // - Khi có ca ĐANG MỞ chưa bàn giao két: chỉ hiện Thu ngân đang giữ két.
+        // - Khi ca ĐANG MỞ đang chờ bàn giao két giữa ca: chỉ hiện người đang giao và người được gán vai trò CASHIER trong ca đó.
+        // - Khi chưa có ca ĐANG MỞ: chỉ hiện nhân sự được gán vai trò CASHIER trong ca ĐÃ LÊN LỊCH đã đến khung mở ca
+        //   ([plannedStart - 60 phút, plannedEnd + 30 phút]).
+        Instant now = Instant.now();
+        Set<Integer> cashierUserIds = findEligiblePinCashierIds(branchId, now);
+        Map<Integer, Instant> activeLocks = pinLockoutService.findActiveEmployeeLocks(branchId);
+
+        return cashierUserIds.stream()
+                .map(activeById::get)
+                .filter(Objects::nonNull)
+                .filter(u -> u.getPosition() != null && UserDirectory.BRANCH_STAFF_ROLES.contains(u.getPosition()))
                 .map(u -> {
                     Instant lockedUntil = activeLocks.get(u.getId());
                     boolean locked = lockedUntil != null && lockedUntil.isAfter(now);
@@ -170,8 +227,10 @@ public class AuthServiceImpl implements AuthService {
         loginIpRateLimiter.onAttempt(clientIp);
 
         Integer branchId = request.branchId();
-        if (!branchRepository.existsById(branchId)) {
-            throw new NotFoundException("chi nhánh");
+        Branch branch = branchRepository.findById(branchId)
+                .orElseThrow(() -> new NotFoundException("chi nhánh"));
+        if (branch.getStatus() == BranchStatus.INACTIVE) {
+            throw new ForbiddenException(ErrorCode.ACCESS_DENIED, "Chi nhánh đã ngừng hoạt động.");
         }
 
         String rawPin = request.pin().trim();
@@ -180,19 +239,20 @@ public class AuthServiceImpl implements AuthService {
         String subject = StringUtils.hasText(user.getUsername())
                 ? user.getUsername()
                 : "cashier-" + user.getId();
+        String effectiveRole = Roles.CASHIER.code();
         IssuedToken access = tokenProvider.issueAccessToken(
-                user.getId(), subject, user.getFullName(), user.roleCode(), user.getBranchId());
+                user.getId(), subject, user.getFullName(), effectiveRole, user.getBranchId());
 
         auditLogService.log(AuditAction.LOGIN, ENTITY_USER, user.getId(), null,
-                Map.of("role", user.roleCode(), "method", "PIN", "branchId", branchId));
+                Map.of("role", effectiveRole, "method", "PIN", "branchId", branchId));
         log.info("Đăng nhập PIN thu ngân thành công: userId={}, branchId={}", user.getId(), branchId);
 
         return new LoginResponse(
                 access.token(),
                 tokenProvider.accessTtlSeconds(),
                 null,
-                toAuthUser(user),
-                Roles.landingFor(user.roleCode())
+                toAuthUser(user, effectiveRole),
+                Roles.landingFor(effectiveRole)
         );
     }
 
@@ -226,8 +286,9 @@ public class AuthServiceImpl implements AuthService {
     public CurrentUserResponse me(UserPrincipal principal) {
         User user = userRepository.findWithRoleAndBranchById(principal.userId())
                 .orElseThrow(() -> new UnauthorizedException(ErrorCode.AUTH_REQUIRED));
-        return new CurrentUserResponse(user.getId(), user.getFullName(), user.getUsername(), user.roleCode(),
-                user.getBranchId(), branchName(user), PermissionCatalog.of(user.roleCode()));
+        String effectiveRole = principal.role() != null ? principal.role() : user.roleCode();
+        return new CurrentUserResponse(user.getId(), user.getFullName(), user.getUsername(), effectiveRole,
+                user.getBranchId(), branchName(user), PermissionCatalog.of(effectiveRole));
     }
 
     // ------------------------------------------------------------------ login
@@ -243,7 +304,7 @@ public class AuthServiceImpl implements AuthService {
                 : user.getPasswordHash();
         boolean passwordOk = passwordEncoder.matches(password, passwordHash);
 
-        if (user != null && passwordOk && user.isActive()) {
+        if (user != null && passwordOk && user.isActive() && isUserBranchAccessible(user)) {
             return user;
         }
         loginAttemptService.onFailure(username);
@@ -256,15 +317,14 @@ public class AuthServiceImpl implements AuthService {
             User user = userRepository.findWithRoleAndBranchById(employeeId)
                     .orElseThrow(() -> new NotFoundException("nhân viên"));
 
-            if (!Roles.CASHIER.code().equals(user.roleCode())) {
-                throw new ForbiddenException(ErrorCode.ACCESS_DENIED,
-                        "Chỉ tài khoản Thu ngân mới được phép mở khóa POS / kiểm két bằng PIN.");
-            }
             if (user.getBranchId() == null || !branchId.equals(user.getBranchId())) {
                 throw new ForbiddenException(ErrorCode.CROSS_BRANCH_DENIED);
             }
             if (!user.isActive()) {
                 throw new UnauthorizedException(ErrorCode.ACCOUNT_INACTIVE);
+            }
+            if (!isCashierAllowedForPinLogin(user, branchId)) {
+                throw new ForbiddenException(ErrorCode.ACCESS_DENIED, buildPinLoginDeniedMessage(user, branchId));
             }
             if (!StringUtils.hasText(user.getPinHash())) {
                 throw new InvalidPinException(
@@ -305,14 +365,148 @@ public class AuthServiceImpl implements AuthService {
             throw toPinFailureException(outcome);
         }
 
-        if (!Roles.CASHIER.code().equals(user.roleCode())) {
-            throw new ForbiddenException(ErrorCode.ACCESS_DENIED,
-                    "Chỉ tài khoản Thu ngân mới được phép mở khóa POS / kiểm két bằng PIN.");
+        if (!isCashierAllowedForPinLogin(user, branchId)) {
+            throw new ForbiddenException(ErrorCode.ACCESS_DENIED, buildPinLoginDeniedMessage(user, branchId));
         }
 
         pinLockoutService.onSuccess(branchId, user.getId());
         pinLockoutService.onSuccess(branchId, null);
         return user;
+    }
+
+    private Set<Integer> findEligiblePinCashierIds(Integer branchId, Instant now) {
+        Set<Integer> eligibleIds = new LinkedHashSet<>();
+
+        List<Shift> openShifts = shiftRepository.findByBranchIdAndStatusOrderByOpenedAtDescIdDesc(
+                branchId, ShiftStatus.OPEN);
+        if (!openShifts.isEmpty()) {
+            for (Shift openShift : openShifts) {
+                Integer activeCashierId = openShift.getActiveCashierId();
+                if (openShift.isEarlyClosePending()) {
+                    Integer requesterId = openShift.getEarlyCloseRequestedBy();
+                    if (requesterId != null) {
+                        eligibleIds.add(requesterId);
+                    } else if (activeCashierId != null) {
+                        eligibleIds.add(activeCashierId);
+                    }
+                } else if (!openShift.isHandoverPending()) {
+                    // Khi ca đang mở và CHƯA bàn giao két giữa ca, Thu ngân đang giữ két phải đứng quầy tiếp
+                    // hoặc thực hiện bàn giao két/đóng ca — không cho Thu ngân khác thế chỗ tại màn PIN.
+                    User activeHolder = activeCashierId == null
+                            ? null
+                            : userRepository.findWithRoleAndBranchById(activeCashierId).orElse(null);
+                    if (isActiveBranchStaff(activeHolder, branchId)) {
+                        eligibleIds.add(activeHolder.getId());
+                    } else {
+                        // Ca do Quản lý mở thay (holder không phải staff PIN) hoặc chưa có holder:
+                        // chỉ cho phép nhân sự được phân công vai trò Thu ngân trong chính ca đang mở này.
+                        collectAssignedCashiersForShift(openShift.getId(), eligibleIds);
+                    }
+                } else {
+                    // Khi ca ĐANG MỞ đang chờ bàn giao két giữa ca, chỉ cho phép đúng những người thuộc ca này:
+                    // - người đang bàn giao (để quay lại hủy bàn giao nếu cần),
+                    // - nhân sự được phân công vai trò CASHIER trong CHÍNH ca đang mở này (kể cả kiêm nhiệm),
+                    // - và người được chỉ định nhận két (nếu pending handover ghi nhận toUserId).
+                    if (activeCashierId != null) {
+                        eligibleIds.add(activeCashierId);
+                    }
+                    collectAssignedCashiersForShift(openShift.getId(), eligibleIds);
+                    shiftHandoverRepository
+                            .findFirstByShiftIdAndStatusOrderByIdDesc(
+                                    openShift.getId(), ShiftHandoverStatus.PENDING_RECEIVE)
+                            .ifPresent(pending -> {
+                                if (pending.getFromUserId() != null) {
+                                    eligibleIds.add(pending.getFromUserId());
+                                }
+                                if (pending.getToUserId() != null) {
+                                    eligibleIds.add(pending.getToUserId());
+                                }
+                            });
+                }
+            }
+            return eligibleIds;
+        }
+
+        LocalDate todayVN = DateTimeUtil.todayVN();
+        List<Shift> nearbyShifts = shiftRepository
+                .findByBranchIdAndShiftDateBetweenOrderByShiftDateAscPlannedStartAsc(
+                        branchId, todayVN.minusDays(1), todayVN.plusDays(1));
+        for (Shift scheduled : nearbyShifts) {
+            if (scheduled.getStatus() == ShiftStatus.SCHEDULED && isWithinPinWindow(scheduled, now)) {
+                collectAssignedCashiersForShift(scheduled.getId(), eligibleIds);
+            }
+        }
+
+        return eligibleIds;
+    }
+
+    private void collectAssignedCashiersForShift(Integer shiftId, Set<Integer> cashierUserIds) {
+        List<ShiftAssignment> assignments = shiftAssignmentRepository.findByShiftIdWithEmployee(shiftId);
+        for (ShiftAssignment sa : assignments) {
+            Integer empId = sa.getId() != null ? sa.getId().getEmployeeId() : null;
+            if (empId == null) {
+                continue;
+            }
+            String effectiveRole = StringUtils.hasText(sa.getRoleInShift())
+                    ? sa.getRoleInShift().trim()
+                    : (sa.getEmployee() != null ? sa.getEmployee().roleCode() : null);
+            if (Roles.CASHIER.code().equalsIgnoreCase(effectiveRole)) {
+                cashierUserIds.add(empId);
+            }
+        }
+    }
+
+    private boolean isCashierAllowedForPinLogin(User user, Integer branchId) {
+        if (!isActiveBranchStaff(user, branchId)) {
+            return false;
+        }
+        return findEligiblePinCashierIds(branchId, Instant.now()).contains(user.getId());
+    }
+
+    private static boolean isActiveBranchStaff(User user, Integer branchId) {
+        return user != null
+                && user.isActive()
+                && branchId != null
+                && branchId.equals(user.getBranchId())
+                && user.getPosition() != null
+                && UserDirectory.BRANCH_STAFF_ROLES.contains(user.getPosition());
+    }
+
+    private String buildPinLoginDeniedMessage(User user, Integer branchId) {
+        List<Shift> openShifts = shiftRepository.findByBranchIdAndStatusOrderByOpenedAtDescIdDesc(
+                branchId, ShiftStatus.OPEN);
+        for (Shift openShift : openShifts) {
+            if (openShift.isEarlyClosePending()
+                    && user != null
+                    && !Objects.equals(openShift.getEarlyCloseRequestedBy(), user.getId())
+                    && !Objects.equals(openShift.getActiveCashierId(), user.getId())) {
+                return "Ca đang mở hiện đang chờ Quản lý chi nhánh xác nhận đóng ca sớm. Vui lòng chờ Quản lý duyệt trước khi đổi Thu ngân khác.";
+            }
+            if (!openShift.isHandoverPending()) {
+                Integer holderId = openShift.getActiveCashierId();
+                User holder = holderId == null
+                        ? null
+                        : userRepository.findWithRoleAndBranchById(holderId).orElse(null);
+                if (isActiveBranchStaff(holder, branchId)
+                        && user != null
+                        && !Objects.equals(holderId, user.getId())) {
+                    return "Ca đang mở hiện chưa bàn giao két giữa ca. Thu ngân đang giữ két phải thực hiện Bàn giao két giữa ca (hoặc Đóng ca) trước khi đổi Thu ngân khác.";
+                }
+            }
+        }
+        if (user != null && Roles.CASHIER.code().equals(user.roleCode())) {
+            return "Thu ngân chưa được phân công vào ca đang mở hoặc chưa đến khung giờ mở ca (trong 60 phút trước giờ bắt đầu) tại chi nhánh.";
+        }
+        return "Chỉ Thu ngân hoặc nhân sự được phân công vai trò Thu ngân trong ca hiện tại mới được phép mở khóa POS / kiểm két bằng PIN.";
+    }
+
+    private static boolean isWithinPinWindow(Shift s, Instant now) {
+        if (s.getPlannedStart() == null || s.getPlannedEnd() == null) {
+            return DateTimeUtil.todayVN().equals(s.getShiftDate());
+        }
+        Instant windowStart = s.getPlannedStart().minus(ShiftSchedulePolicy.EARLY_OPEN_GRACE);
+        Instant windowEnd = s.getPlannedEnd().plus(ShiftSchedulePolicy.PAST_EXPIRE_GRACE);
+        return !now.isBefore(windowStart) && !now.isAfter(windowEnd);
     }
 
     private static RuntimeException toPinFailureException(PinLockoutService.FailureOutcome outcome) {
@@ -373,7 +567,14 @@ public class AuthServiceImpl implements AuthService {
     private User loadActiveUser(Integer userId) {
         return userRepository.findWithRoleAndBranchById(userId)
                 .filter(User::isActive)
+                .filter(AuthServiceImpl::isUserBranchAccessible)
                 .orElseThrow(() -> new UnauthorizedException(ErrorCode.AUTH_TOKEN_EXPIRED));
+    }
+
+    private static boolean isUserBranchAccessible(User user) {
+        return user.getPosition() == Roles.COO
+                || user.getBranch() == null
+                || user.getBranch().getStatus() != BranchStatus.INACTIVE;
     }
 
     /**
@@ -405,7 +606,13 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private static AuthUserDto toAuthUser(User user) {
-        return new AuthUserDto(user.getId(), user.getFullName(), user.roleCode(), user.getBranchId(),
+        return toAuthUser(user, null);
+    }
+
+    private static AuthUserDto toAuthUser(User user, String effectiveRole) {
+        return new AuthUserDto(user.getId(), user.getFullName(),
+                effectiveRole != null ? effectiveRole : user.roleCode(),
+                user.getBranchId(),
                 branchName(user));
     }
 

@@ -47,7 +47,7 @@ public class VoucherController {
             description = "Mặc định 10 phần tử/trang; lọc keyword/status; sortBy: code|startDate|endDate|createdAt.")
     @ApiResponse(responseCode = "200", description = "OK")
     @GetMapping
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAuthority('COO')")
     public PageResponse<VoucherDto> list(@ModelAttribute @Valid VoucherListQuery query) {
         return PageResponse.of(voucherService.list(query));
     }

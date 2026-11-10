@@ -8,6 +8,7 @@ public enum BusinessErrorCode {
 
     VOUCHER_EXPIRED("Voucher đã hết hạn."),
     VOUCHER_MIN_NOT_MET("Chưa đạt giá trị tối thiểu để áp voucher."),
+    VOUCHER_SCOPE_NOT_MET("Đơn hàng không chứa sản phẩm hoặc danh mục thuộc phạm vi áp dụng của voucher."),
     VOUCHER_USAGE_EXCEEDED("Voucher đã hết lượt sử dụng."),
     VOUCHER_ALREADY_APPLIED("Đơn hàng đã áp một voucher."),
     CATEGORY_NOT_EMPTY("Danh mục còn sản phẩm, không thể xoá."),
@@ -40,7 +41,8 @@ public enum BusinessErrorCode {
     PAYROLL_LOCKED("Bảng lương đã chốt/duyệt, không thể chỉnh sửa."),
     REPORT_NO_DATA_TO_EXPORT("Không có dữ liệu để xuất."),
     SHIFT_ASSIGNMENT_REQUIRED("Nhân viên chưa được phân công ca làm việc phù hợp để chấm công."),
-    SHIFT_HANDOVER_PENDING("Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca. Vui lòng hoàn tất kiểm két nhận ca trước khi giao dịch.");
+    SHIFT_HANDOVER_PENDING("Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca. Vui lòng hoàn tất kiểm két nhận ca trước khi giao dịch."),
+    SHIFT_EARLY_CLOSE_PENDING("Ca làm việc đang có yêu cầu đóng ca sớm chờ Quản lý chi nhánh xác nhận. Quầy POS tạm khóa cho đến khi được duyệt hoặc hủy yêu cầu.");
 
 
     private final String message;

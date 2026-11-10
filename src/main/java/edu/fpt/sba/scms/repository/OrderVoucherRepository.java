@@ -11,5 +11,7 @@ public interface OrderVoucherRepository extends JpaRepository<OrderVoucher, Inte
 
     boolean existsByOrderId(Integer orderId);
 
+    boolean existsByVoucherId(Integer voucherId);
+
     void deleteByOrderId(Integer orderId);
 }

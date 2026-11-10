@@ -4,6 +4,7 @@ import edu.fpt.sba.scms.common.enums.RecordStatus;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Collection;
 
 /**
  * Quy tắc kiểm tra tính hợp lệ của voucher khi áp dụng vào đơn hàng (Pure Java - Domain).
@@ -56,5 +57,35 @@ public final class VoucherEligibilityPolicy {
             return false;
         }
         return orderTotal.compareTo(minOrderAmount) >= 0;
+    }
+
+    /**
+     * Kiểm tra phạm vi sản phẩm/danh mục của voucher: nếu cả hai tập cho phép đều rỗng thì áp toàn menu;
+     * ngược lại đơn hàng phải chứa ít nhất một sản phẩm hoặc danh mục thuộc phạm vi cho phép.
+     */
+    public static boolean isScopeEligible(Collection<Integer> allowedProductIds,
+                                          Collection<Integer> allowedCategoryIds,
+                                          Collection<Integer> orderProductIds,
+                                          Collection<Integer> orderCategoryIds) {
+        boolean hasProductScope = allowedProductIds != null && !allowedProductIds.isEmpty();
+        boolean hasCategoryScope = allowedCategoryIds != null && !allowedCategoryIds.isEmpty();
+        if (!hasProductScope && !hasCategoryScope) {
+            return true;
+        }
+        if (hasProductScope && orderProductIds != null) {
+            for (Integer pid : orderProductIds) {
+                if (pid != null && allowedProductIds.contains(pid)) {
+                    return true;
+                }
+            }
+        }
+        if (hasCategoryScope && orderCategoryIds != null) {
+            for (Integer cid : orderCategoryIds) {
+                if (cid != null && allowedCategoryIds.contains(cid)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 }

@@ -1,12 +1,14 @@
 package edu.fpt.sba.scms.service;
 
 import edu.fpt.sba.scms.dto.request.AcceptShiftHandoverRequest;
+import edu.fpt.sba.scms.dto.request.ApproveEarlyCloseRequest;
 import edu.fpt.sba.scms.dto.request.CancelShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.CashAdjustmentRequest;
 import edu.fpt.sba.scms.dto.request.CloseShiftRequest;
 import edu.fpt.sba.scms.dto.request.CreateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.InitiateShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.OpenShiftRequest;
+import edu.fpt.sba.scms.dto.request.RejectEarlyCloseRequest;
 import edu.fpt.sba.scms.dto.request.UpdateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.query.ShiftListQuery;
 import edu.fpt.sba.scms.dto.response.BranchShiftOverviewResponse;
@@ -39,6 +41,10 @@ public interface ShiftService {
     ShiftResponse cancelHandover(Integer shiftId, CancelShiftHandoverRequest request, UserPrincipal principal);
 
     ShiftResponse closeShift(Integer shiftId, CloseShiftRequest request, UserPrincipal principal);
+
+    ShiftResponse approveEarlyClose(Integer shiftId, ApproveEarlyCloseRequest request, UserPrincipal principal);
+
+    ShiftResponse rejectEarlyClose(Integer shiftId, RejectEarlyCloseRequest request, UserPrincipal principal);
 
     ShiftSummaryResponse getCurrentShiftSummary(Integer branchId);
 

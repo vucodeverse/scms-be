@@ -26,6 +26,10 @@ public interface UserRepository extends JpaRepository<User, Integer>, JpaSpecifi
 
     boolean existsByUsernameAndIdNot(String username, Integer id);
 
+    boolean existsByPhone(String phone);
+
+    boolean existsByPhoneAndIdNot(String phone, Integer id);
+
     /** Email không UNIQUE ở DB (có thể null) — chỉ cảnh báo trùng khi tạo/sửa. */
     Optional<User> findFirstByEmailIgnoreCase(String email);
 

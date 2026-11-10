@@ -16,6 +16,13 @@ public interface ShiftAssignmentRepository extends JpaRepository<ShiftAssignment
 
     List<ShiftAssignment> findByIdShiftId(Integer shiftId);
 
+    @Query("""
+            SELECT sa FROM ShiftAssignment sa
+            JOIN FETCH sa.employee e
+            WHERE sa.id.shiftId = :shiftId
+            """)
+    List<ShiftAssignment> findByShiftIdWithEmployee(@Param("shiftId") Integer shiftId);
+
     void deleteByIdShiftId(Integer shiftId);
 
     /**

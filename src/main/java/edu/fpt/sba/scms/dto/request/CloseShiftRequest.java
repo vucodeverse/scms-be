@@ -21,9 +21,17 @@ public record CloseShiftRequest(
 
         @Schema(description = "Mã PIN cá nhân (4-6 số) của Thu ngân để xác nhận đóng ca & tự động Check-out (tùy chọn với Quản lý/COO)", example = "2468")
         @Pattern(regexp = "^$|^[0-9]{4,6}$", message = "Mã PIN phải gồm từ 4 đến 6 chữ số")
-        String pin
+        String pin,
+
+        @Schema(description = "Lý do đóng ca sớm hơn 10 phút so với giờ dự kiến kết thúc (tùy chọn)", example = "Chi nhánh mất điện, xin đóng ca sớm")
+        @Size(max = 500, message = "Lý do đóng ca sớm tối đa 500 ký tự")
+        String earlyCloseReason
 ) {
     public CloseShiftRequest(BigDecimal countedCash, String discrepancyReason) {
-        this(countedCash, discrepancyReason, null);
+        this(countedCash, discrepancyReason, null, null);
+    }
+
+    public CloseShiftRequest(BigDecimal countedCash, String discrepancyReason, String pin) {
+        this(countedCash, discrepancyReason, pin, null);
     }
 }

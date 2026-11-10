@@ -6,6 +6,8 @@ import edu.fpt.sba.scms.common.enums.ProductStatus;
 import edu.fpt.sba.scms.common.enums.RecordStatus;
 import edu.fpt.sba.scms.common.enums.Roles;
 import edu.fpt.sba.scms.common.enums.ShiftStatus;
+import edu.fpt.sba.scms.common.util.DateTimeUtil;
+import edu.fpt.sba.scms.model.Shift;
 import edu.fpt.sba.scms.common.enums.UserStatus;
 import edu.fpt.sba.scms.model.Branch;
 import edu.fpt.sba.scms.model.Category;
@@ -212,9 +214,9 @@ public class EndToEndPosShiftOrderFlowIT {
         // =========================================================================
         // BƯỚC 1: LÊN LỊCH CA LÀM VIỆC VÀ PHÂN CÔNG NHÂN VIÊN (UC08, BR-15)
         // =========================================================================
-        LocalDate today = LocalDate.now();
-        Instant plannedStart = Instant.now().truncatedTo(ChronoUnit.HOURS);
-        Instant plannedEnd = plannedStart.plus(8, ChronoUnit.HOURS);
+        LocalDate today = DateTimeUtil.todayVN();
+        Instant plannedStart = today.atTime(7, 0).atZone(DateTimeUtil.VN).toInstant();
+        Instant plannedEnd = today.atTime(12, 30).atZone(DateTimeUtil.VN).toInstant();
 
         String schedulePayload = """
                 {
@@ -239,6 +241,11 @@ public class EndToEndPosShiftOrderFlowIT {
 
         int scheduledShiftId = com.jayway.jsonpath.JsonPath.read(scheduleRes.getResponse().getContentAsString(), "$.data.shiftId");
         assertTrue(scheduledShiftId > 0, "Ca làm việc lên lịch phải có ID > 0");
+        if (LocalTime.now(DateTimeUtil.VN).isBefore(LocalTime.of(6, 0))) {
+            Shift earlyShift = shiftRepository.findById(scheduledShiftId).orElseThrow();
+            earlyShift.setPlannedStart(Instant.now().minus(30, ChronoUnit.MINUTES));
+            shiftRepository.save(earlyShift);
+        }
 
         // Kiểm tra trong database: bảng shift_assignment đã lưu đúng phân công
         var assignments = shiftAssignmentRepository.findByIdShiftId(scheduledShiftId);
@@ -365,8 +372,13 @@ public class EndToEndPosShiftOrderFlowIT {
 
         // =========================================================================
         // BƯỚC 6: THU NGÂN KIỂM ĐẾM TIỀN & ĐÓNG CA (UC27, BR-38)
+        // Đưa plannedEnd vào ngưỡng 10 phút cuối ca để mô phỏng đóng ca đúng giờ mọi thời điểm chạy test
         // Đếm thực tế trong két = 1.090.000 đ (khớp 100% với số dư kỳ vọng)
         // =========================================================================
+        Shift closingWindowShift = shiftRepository.findById(scheduledShiftId).orElseThrow();
+        closingWindowShift.setPlannedEnd(Instant.now().plus(5, ChronoUnit.MINUTES));
+        shiftRepository.save(closingWindowShift);
+
         String closeShiftPayload = """
                 {
                     "countedCash": 1090000,

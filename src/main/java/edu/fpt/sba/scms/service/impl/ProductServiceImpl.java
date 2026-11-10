@@ -5,6 +5,7 @@ import edu.fpt.sba.scms.common.enums.AuditAction;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
 import edu.fpt.sba.scms.common.enums.ProductSizeName;
 import edu.fpt.sba.scms.common.enums.ProductStatus;
+import edu.fpt.sba.scms.common.enums.RecordStatus;
 import edu.fpt.sba.scms.common.exception.ConflictException;
 import edu.fpt.sba.scms.common.exception.InvalidFieldValueException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
@@ -17,12 +18,16 @@ import edu.fpt.sba.scms.dto.response.RecipeLineDto;
 import edu.fpt.sba.scms.mapper.ProductMapper;
 import edu.fpt.sba.scms.model.Category;
 import edu.fpt.sba.scms.model.Product;
+import edu.fpt.sba.scms.model.ProductSize;
 import edu.fpt.sba.scms.model.ProductTopping;
+import edu.fpt.sba.scms.model.Topping;
 import edu.fpt.sba.scms.repository.CategoryRepository;
+import edu.fpt.sba.scms.repository.OrderLineRepository;
 import edu.fpt.sba.scms.repository.ProductRepository;
 import edu.fpt.sba.scms.repository.ProductSizeRepository;
-import edu.fpt.sba.scms.repository.ProductToppingRepository;
 import edu.fpt.sba.scms.repository.ProductSpecs;
+import edu.fpt.sba.scms.repository.ProductToppingRepository;
+import edu.fpt.sba.scms.repository.RecipeRepository;
 import edu.fpt.sba.scms.repository.ToppingRepository;
 import edu.fpt.sba.scms.service.ProductService;
 import edu.fpt.sba.scms.service.RecipeService;
@@ -36,7 +41,6 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -64,6 +68,8 @@ public class ProductServiceImpl implements ProductService {
     private final CategoryRepository categoryRepository;
     private final ToppingRepository toppingRepository;
     private final ProductToppingRepository productToppingRepository;
+    private final OrderLineRepository orderLineRepository;
+    private final RecipeRepository recipeRepository;
     private final RecipeService recipeService;
     private final ProductMapper productMapper;
     private final ProductAssembler productAssembler;
@@ -102,6 +108,7 @@ public class ProductServiceImpl implements ProductService {
     public ProductDto create(SaveProductRequest request) {
         String name = MasterDataText.requireText(request.name());
         Category category = requireCategory(request.categoryId());
+        validateCategoryForProduct(category, request.status());
         if (productRepository.existsByName(name)) {
             throw new ConflictException(ErrorCode.DUPLICATE_NAME);
         }
@@ -125,6 +132,8 @@ public class ProductServiceImpl implements ProductService {
         Product product = getProduct(id);
         String name = MasterDataText.requireText(request.name());
         Category category = requireCategory(request.categoryId());
+        validateCategoryForProduct(category, request.status());
+        validateDefaultSize(id, request.defaultSize());
         if (productRepository.existsByNameAndIdNot(name, id)) {
             throw new ConflictException(ErrorCode.DUPLICATE_NAME);
         }
@@ -172,18 +181,28 @@ public class ProductServiceImpl implements ProductService {
         product.setStatus(ProductStatus.INACTIVE);
         auditLogService.log(AuditAction.PRODUCT_SAVE, ENTITY, id, null,
                 Map.of("status", ProductStatus.INACTIVE.name()));
-        return productMapper.toDto(product, null, null, List.of(), List.of());
+        Category category = productCategory(product);
+        return productMapper.toDto(product,
+                category == null ? null : category.getName(),
+                category == null ? null : category.getCode(),
+                productAssembler.sizes(id),
+                productAssembler.toppings(id));
     }
 
     @Override
     @Transactional
     public void hardDelete(Integer id) {
         Product product = requireProductForUpdate(id);
+        if (orderLineRepository.existsByProductId(id)) {
+            throw new ConflictException(ErrorCode.RESOURCE_CONFLICT,
+                    "Sản phẩm đã phát sinh trong đơn hàng. Chỉ có thể xoá mềm (ngừng bán).");
+        }
         long voucherLinks = productRepository.countVoucherLinks(id);
         if (voucherLinks > 0) {
             throw new ConflictException(ErrorCode.RESOURCE_CONFLICT,
                     "Sản phẩm đang được voucher sử dụng. Gỡ sản phẩm khỏi voucher trước khi xoá cứng.");
         }
+        recipeRepository.deleteByProductId(id);
         productToppingRepository.deleteAllByProductId(id);
         productSizeRepository.deleteAllByProductId(id);
         productRepository.delete(product);
@@ -199,7 +218,32 @@ public class ProductServiceImpl implements ProductService {
         return recipeService.listRecipeLines(id, size);
     }
 
-    /** Topping gửi lên phải tồn tại và không trùng — báo lỗi đầu vào thay vì để FK/UNIQUE ném 500. */
+    private static void validateCategoryForProduct(Category category, ProductStatus status) {
+        if (status == ProductStatus.INACTIVE) {
+            return;
+        }
+        if (category.isSystemCategory()) {
+            throw new InvalidFieldValueException("categoryId",
+                    "Không thể gắn sản phẩm đang bán vào danh mục hệ thống " + Category.UNCATEGORIZED_CODE + ".");
+        }
+        if (category.getStatus() != RecordStatus.ACTIVE) {
+            throw new InvalidFieldValueException("categoryId",
+                    "Danh mục đã ngừng hoạt động, không thể gắn cho sản phẩm đang bán.");
+        }
+    }
+
+    private void validateDefaultSize(Integer productId, ProductSizeName defaultSize) {
+        if (defaultSize == null) {
+            return;
+        }
+        List<ProductSize> sizes = productSizeRepository.findAllByProductIdOrderBySizeAsc(productId);
+        if (!sizes.isEmpty() && sizes.stream().noneMatch(ps -> ps.getSize() == defaultSize)) {
+            throw new InvalidFieldValueException("defaultSize",
+                    "Size mặc định " + defaultSize + " chưa được cấu hình giá cho sản phẩm.");
+        }
+    }
+
+    /** Topping gửi lên phải tồn tại, đang ACTIVE và không trùng — báo lỗi đầu vào thay vì để FK/UNIQUE ném 500. */
     private void validateToppings(SaveProductToppingsRequest request) {
         List<Integer> ids = request.items().stream().map(SaveProductToppingsRequest.Item::toppingId).toList();
         List<Integer> duplicates = ids.stream()
@@ -212,9 +256,17 @@ public class ProductServiceImpl implements ProductService {
         if (!duplicates.isEmpty()) {
             throw new InvalidFieldValueException("items", "Topping bị lặp: " + duplicates + ".");
         }
-        long found = toppingRepository.findAllById(ids).size();
-        if (found != ids.size()) {
+        List<Topping> found = toppingRepository.findAllById(ids);
+        if (found.size() != ids.size()) {
             throw new InvalidFieldValueException("items", "Có topping không tồn tại.");
+        }
+        List<Integer> inactiveIds = found.stream()
+                .filter(t -> t.getStatus() != RecordStatus.ACTIVE)
+                .map(Topping::getId)
+                .toList();
+        if (!inactiveIds.isEmpty()) {
+            throw new InvalidFieldValueException("items",
+                    "Topping đã ngừng hoạt động, không thể gắn vào sản phẩm: " + inactiveIds + ".");
         }
     }
 

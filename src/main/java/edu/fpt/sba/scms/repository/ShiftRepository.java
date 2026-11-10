@@ -22,6 +22,8 @@ public interface ShiftRepository extends JpaRepository<Shift, Integer>, JpaSpeci
 
     Optional<Shift> findFirstByBranchIdAndStatusOrderByOpenedAtDesc(Integer branchId, ShiftStatus status);
 
+    List<Shift> findByBranchIdAndStatusOrderByOpenedAtDescIdDesc(Integer branchId, ShiftStatus status);
+
     Optional<Shift> findFirstByBranchIdAndStatusOrderByClosedAtDescIdDesc(Integer branchId, ShiftStatus status);
 
     List<Shift> findByStatus(ShiftStatus status);
@@ -33,6 +35,8 @@ public interface ShiftRepository extends JpaRepository<Shift, Integer>, JpaSpeci
     Optional<Shift> findByIdForUpdate(@Param("id") Integer id);
 
     boolean existsByBranchIdAndStatus(Integer branchId, ShiftStatus status);
+
+    boolean existsByActiveCashierIdAndStatus(Integer activeCashierId, ShiftStatus status);
 
     boolean existsByBranchIdAndShiftDateAndShiftTypeAndStatusNot(
             Integer branchId, LocalDate shiftDate, ShiftType shiftType, ShiftStatus status);

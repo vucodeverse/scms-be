@@ -34,6 +34,8 @@ public interface HrReportRepository extends Repository<Attendance, Integer> {
         Instant getPlannedStart();
 
         Instant getPlannedEnd();
+
+        Boolean getIsReplacement();
     }
 
     interface EmployeeRow {
@@ -55,7 +57,8 @@ public interface HrReportRepository extends Repository<Attendance, Integer> {
 
     @Query("""
             select sa.id.employeeId as employeeId, s.id as shiftId,
-                   s.plannedStart as plannedStart, s.plannedEnd as plannedEnd
+                   s.plannedStart as plannedStart, s.plannedEnd as plannedEnd,
+                   sa.isReplacement as isReplacement
             from ShiftAssignment sa
             join sa.shift s
             where s.branchId = :branchId and s.shiftDate between :from and :to

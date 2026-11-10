@@ -43,6 +43,7 @@ public enum ErrorCode {
     DUPLICATE_NAME("Tên đã tồn tại.", HttpStatus.CONFLICT),
     DUPLICATE_USERNAME("Tên đăng nhập đã tồn tại.", HttpStatus.CONFLICT),
     DUPLICATE_EMAIL("Email đã tồn tại.", HttpStatus.CONFLICT),
+    DUPLICATE_PHONE("Số điện thoại đã tồn tại.", HttpStatus.CONFLICT),
     DUPLICATE_PIN("PIN đã được dùng trong chi nhánh.", HttpStatus.CONFLICT),
     DUPLICATE_CARD("Thẻ đã gắn với nhân viên khác.", HttpStatus.CONFLICT),
     SCHEDULE_CONFLICT("Lịch làm việc bị trùng.", HttpStatus.CONFLICT),

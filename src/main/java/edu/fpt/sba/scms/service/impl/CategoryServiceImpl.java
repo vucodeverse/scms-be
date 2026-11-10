@@ -103,6 +103,9 @@ public class CategoryServiceImpl implements CategoryService {
                 .build());
         category.assignGeneratedCode();
         List<Integer> productIds = assignProducts(category.getId(), request.productIds());
+        if (request.status() == RecordStatus.INACTIVE) {
+            ensureNoSellingProducts(category.getId());
+        }
 
         auditLogService.log(AuditAction.MENU_CATEGORY_SAVE, ENTITY, category.getId(), null,
                 Map.of("code", category.getCode(), "name", name));
@@ -125,6 +128,9 @@ public class CategoryServiceImpl implements CategoryService {
         category.setSortOrder(request.sortOrder());
         category.setStatus(request.status());
         List<Integer> productIds = assignProducts(id, request.productIds());
+        if (request.status() == RecordStatus.INACTIVE) {
+            ensureNoSellingProducts(id);
+        }
 
         auditLogService.log(AuditAction.MENU_CATEGORY_SAVE, ENTITY, id, Map.of("name", previousName),
                 Map.of("name", name, "status", request.status().name()));
@@ -180,6 +186,7 @@ public class CategoryServiceImpl implements CategoryService {
     @Transactional
     public void reorder(OrderCategoryRequest request) {
         ensureNoDuplicateIds(request);
+        ensureNoDuplicateSortOrders(request);
         Map<Integer, Category> categories = categoryRepository
                 .lockAllByIdIn(request.items().stream().map(OrderCategoryRequest.Item::categoryId).toList())
                 .stream()
@@ -253,6 +260,21 @@ public class CategoryServiceImpl implements CategoryService {
                 .collect(Collectors.toSet());
         if (!duplicates.isEmpty()) {
             throw new InvalidFieldValueException("items", "Danh mục bị lặp trong danh sách sắp xếp: " + duplicates + ".");
+        }
+    }
+
+    private static void ensureNoDuplicateSortOrders(OrderCategoryRequest request) {
+        Set<Integer> duplicates = request.items().stream()
+                .map(OrderCategoryRequest.Item::sortOrder)
+                .filter(Objects::nonNull)
+                .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()))
+                .entrySet().stream()
+                .filter(entry -> entry.getValue() > 1)
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toSet());
+        if (!duplicates.isEmpty()) {
+            throw new InvalidFieldValueException("items",
+                    "Thứ tự hiển thị (sortOrder) không được trùng lặp: " + duplicates + ".");
         }
     }
 

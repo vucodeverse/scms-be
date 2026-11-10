@@ -61,7 +61,7 @@ public final class Specifications {
     }
 
     /** Mẫu {@code LIKE} đã escape ({@code escape '!'}) và viết thường để khớp {@code lower(...)}. */
-    static String likePattern(String keyword) {
+    public static String likePattern(String keyword) {
         String escaped = keyword.trim()
                 .replace("!", "!!")
                 .replace("%", "!%")

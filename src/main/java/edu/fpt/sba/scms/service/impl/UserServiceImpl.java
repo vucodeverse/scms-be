@@ -6,6 +6,7 @@ import edu.fpt.sba.scms.common.enums.BranchStatus;
 import edu.fpt.sba.scms.common.enums.BusinessErrorCode;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
 import edu.fpt.sba.scms.common.enums.Roles;
+import edu.fpt.sba.scms.common.enums.ShiftStatus;
 import edu.fpt.sba.scms.common.enums.UserStatus;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
 import edu.fpt.sba.scms.common.exception.ConflictException;
@@ -27,6 +28,7 @@ import edu.fpt.sba.scms.model.Role;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.BranchRepository;
 import edu.fpt.sba.scms.repository.RoleRepository;
+import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
 import edu.fpt.sba.scms.repository.UserSpecs;
 import edu.fpt.sba.scms.security.BranchContext;
@@ -78,6 +80,7 @@ public class UserServiceImpl implements UserService {
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
     private final BranchRepository branchRepository;
+    private final ShiftRepository shiftRepository;
     private final UserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
     private final PinHasher pinHasher;
@@ -138,13 +141,18 @@ public class UserServiceImpl implements UserService {
         if (positionsNeedsBranch(position) && branchId == null) {
             throw new InvalidFieldValueException("branchId", "COO tạo nhân sự phải chọn chi nhánh.");
         }
-        ensureBranchExists(branchId);
+        requireValidBranch(branchId, request.status());
+
+        String phone = MasterDataText.trimToNull(request.phone());
+        String email = lowerOrNull(request.email());
+        validateUniqueContact(phone, email, null);
+
         Role role = userDirectory.roleOf(position);
 
         User user = User.builder()
                 .fullName(MasterDataText.trimToNull(request.fullName()))
-                .phone(MasterDataText.trimToNull(request.phone()))
-                .email(lowerOrNull(request.email()))
+                .phone(phone)
+                .email(email)
                 .position(position)
                 .roleId(role.getId())
                 .branchId(branchId)
@@ -182,7 +190,7 @@ public class UserServiceImpl implements UserService {
             throw new ForbiddenException(ErrorCode.ACCESS_DENIED,
                     "Quản lý chi nhánh chỉ được sửa Cashier / Barista / Waiter.");
         }
-        // Đổi chi nhánh của BRANCH_MANAGER đi qua endpoint riêng (§10.3) để audit MANAGER_REASSIGN.
+        // Đổi chi nhánh của BRANCH_MANAGER cùng nhóm role đi qua endpoint riêng (§10.3) để audit MANAGER_REASSIGN.
         Integer branchId = isCoo(actor) ? request.branchId() : user.getBranchId();
         if (Objects.equals(branchId, null) && positionsNeedsBranch(position)) {
             throw new InvalidFieldValueException("branchId", "Nhân sự chi nhánh phải thuộc một chi nhánh.");
@@ -192,10 +200,15 @@ public class UserServiceImpl implements UserService {
             throw new InvalidFieldValueException("branchId",
                     "Đổi chi nhánh dùng endpoint riêng, không đổi qua cập nhật thông tin.");
         }
-        ensureBranchExists(branchId);
+        requireValidBranch(branchId, request.status());
+
+        String phone = MasterDataText.trimToNull(request.phone());
+        String email = lowerOrNull(request.email());
+        validateUniqueContact(phone, email, id);
 
         UserStatus previousStatus = user.getStatus();
         Roles previousPosition = user.getPosition();
+        Integer previousBranchId = user.getBranchId();
         Object before = snapshot(user);
 
         if (isCoo(actor)) {
@@ -205,25 +218,49 @@ public class UserServiceImpl implements UserService {
             user.setBranchId(branchId);
         }
         user.setFullName(MasterDataText.trimToNull(request.fullName()));
-        user.setPhone(MasterDataText.trimToNull(request.phone()));
-        user.setEmail(lowerOrNull(request.email()));
+        user.setPhone(phone);
+        user.setEmail(email);
         user.setStatus(request.status());
         applyLoginAccount(user, request.username(), request.password(), false);
         applyPin(user, user.getBranchId(), request.pin(), false);
         applyCard(user, request.cardCode(), user.getId());
 
         boolean roleChanged = previousPosition != user.getPosition();
+        boolean branchChanged = !Objects.equals(previousBranchId, user.getBranchId());
         boolean deactivated = previousStatus == UserStatus.ACTIVE && user.getStatus() != UserStatus.ACTIVE;
+        boolean reactivated = previousStatus != UserStatus.ACTIVE && user.getStatus() == UserStatus.ACTIVE;
         if (deactivated) {
             ensureNotLastCoo(user, "ngừng hoạt động");
+            ensureNoOpenShiftAsActiveCashier(user.getId());
+            refreshTokenStore.revokeAllOfUser(user.getId());
+        } else if (roleChanged || branchChanged) {
             refreshTokenStore.revokeAllOfUser(user.getId());
         }
+        if (reactivated) {
+            validateActiveUniquenessOnReactivation(user);
+        }
+
         if ((deactivated && user.getPosition() == Roles.BRANCH_MANAGER)
                 || (previousPosition == Roles.BRANCH_MANAGER && user.getPosition() != Roles.BRANCH_MANAGER)) {
-            detachManagerFromBranch(user, previousPosition == Roles.BRANCH_MANAGER && user.getPosition() == Roles.BRANCH_MANAGER);
+            boolean clearUserBranch = user.getPosition() == Roles.BRANCH_MANAGER;
+            detachManagerFromBranch(user, previousBranchId, clearUserBranch);
+        }
+
+        Branch assignedBranch = null;
+        if (user.getPosition() == Roles.BRANCH_MANAGER
+                && user.getStatus() == UserStatus.ACTIVE
+                && user.getBranchId() != null
+                && (previousPosition != Roles.BRANCH_MANAGER
+                    || previousStatus != UserStatus.ACTIVE
+                    || !Objects.equals(previousBranchId, user.getBranchId()))) {
+            assignedBranch = resolveInitialManagerBranch(user.getPosition(), user.getBranchId(), user.getStatus());
         }
 
         userRepository.save(user);
+        if (assignedBranch != null) {
+            assignedBranch.setManagerId(user.getId());
+            branchRepository.save(assignedBranch);
+        }
         if (request.pin() != null && !request.pin().isBlank() && user.getBranchId() != null) {
             String actorName = actor != null && actor.userId() != null
                     ? userRepository.findById(actor.userId()).map(User::getFullName).orElse(actor.username())
@@ -234,7 +271,7 @@ public class UserServiceImpl implements UserService {
         audit(roleChanged ? AuditAction.ROLE_ASSIGN
                 : user.getPosition() == Roles.BRANCH_MANAGER ? AuditAction.MANAGER_UPDATE : AuditAction.EMPLOYEE_UPDATE,
                 user.getId(), before, snapshot(user));
-        return toDto(user, null);
+        return toDto(user, assignedBranch == null ? null : assignedBranch.getName());
     }
 
     @Override
@@ -250,12 +287,19 @@ public class UserServiceImpl implements UserService {
         boolean activated = request.status() == UserStatus.ACTIVE && user.getStatus() != UserStatus.ACTIVE;
         user.setStatus(request.status());
         if (deactivated) {
+            ensureNotLastCoo(user, "ngừng hoạt động");
+            ensureNoOpenShiftAsActiveCashier(user.getId());
             refreshTokenStore.revokeAllOfUser(user.getId());
             if (user.getPosition() == Roles.BRANCH_MANAGER) {
-                detachManagerFromBranch(user, true);
+                detachManagerFromBranch(user, user.getBranchId(), true);
             }
-        } else if (activated && user.getPosition() == Roles.BRANCH_MANAGER && user.getBranchId() != null) {
-            user.setBranchId(null);
+        } else if (activated) {
+            if (user.getPosition() == Roles.BRANCH_MANAGER && user.getBranchId() != null) {
+                user.setBranchId(null);
+            } else if (user.getBranchId() != null) {
+                requireValidBranch(user.getBranchId(), UserStatus.ACTIVE);
+            }
+            validateActiveUniquenessOnReactivation(user);
         }
         userRepository.save(user);
         audit(AuditAction.EMPLOYEE_STATUS, user.getId(), before, snapshot(user));
@@ -336,8 +380,7 @@ public class UserServiceImpl implements UserService {
     }
 
     /** Gỡ liên kết quản lý ở chi nhánh khi tài khoản quản lý bị ngừng hoạt động hoặc đổi sang chức danh khác. */
-    private void detachManagerFromBranch(User user, boolean clearUserBranch) {
-        Integer oldBranchId = user.getBranchId();
+    private void detachManagerFromBranch(User user, Integer oldBranchId, boolean clearUserBranch) {
         if (oldBranchId != null) {
             branchRepository.lockById(oldBranchId).ifPresent(branch -> {
                 if (Objects.equals(branch.getManagerId(), user.getId())) {
@@ -351,6 +394,52 @@ public class UserServiceImpl implements UserService {
             user.setPinHash(null);
             user.setPinLookupHash(null);
             user.setPinSetAt(null);
+        }
+    }
+
+    private void ensureNoOpenShiftAsActiveCashier(Integer userId) {
+        if (shiftRepository.existsByActiveCashierIdAndStatus(userId, ShiftStatus.OPEN)) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_ALREADY_OPEN,
+                    "Nhân sự đang giữ két cho ca làm việc đang mở, không thể ngừng hoạt động.");
+        }
+    }
+
+    private void validateUniqueContact(String phone, String email, Integer excludeId) {
+        if (phone != null) {
+            boolean phoneTaken = excludeId == null
+                    ? userRepository.existsByPhone(phone)
+                    : userRepository.existsByPhoneAndIdNot(phone, excludeId);
+            if (phoneTaken) {
+                throw new ConflictException(ErrorCode.DUPLICATE_PHONE);
+            }
+        }
+        if (email != null) {
+            boolean emailTaken = excludeId == null
+                    ? userRepository.findFirstByEmailIgnoreCase(email).isPresent()
+                    : userRepository.findFirstByEmailIgnoreCaseAndIdNot(email, excludeId).isPresent();
+            if (emailTaken) {
+                throw new ConflictException(ErrorCode.DUPLICATE_EMAIL);
+            }
+        }
+    }
+
+    private void validateActiveUniquenessOnReactivation(User user) {
+        if (UserDirectory.requiresPin(user.getPosition())
+                && user.getBranchId() != null
+                && user.getPinLookupHash() != null) {
+            userRepository.findFirstByBranchIdAndPinLookupHashAndStatus(
+                            user.getBranchId(), user.getPinLookupHash(), UserStatus.ACTIVE)
+                    .filter(holder -> !Objects.equals(holder.getId(), user.getId()))
+                    .ifPresent(holder -> {
+                        throw new ConflictException(ErrorCode.DUPLICATE_PIN);
+                    });
+        }
+        if (user.getCardCode() != null) {
+            userRepository.findFirstByCardCodeAndStatusAndIdNot(
+                            user.getCardCode(), UserStatus.ACTIVE, user.getId())
+                    .ifPresent(holder -> {
+                        throw new ConflictException(ErrorCode.DUPLICATE_CARD);
+                    });
         }
     }
 
@@ -430,11 +519,19 @@ public class UserServiceImpl implements UserService {
     /** Rule §7.2: COO/BM bắt buộc username + password; role chi nhánh không được có */
     private void applyLoginAccount(User user, String username, String password, boolean creating) {
         String normalizedUsername = MasterDataText.trimToNull(username);
+        boolean hasPasswordInput = password != null && !password.isBlank();
         boolean needsAccount = UserDirectory.requiresLoginAccount(user.getPosition());
         if (!needsAccount) {
-            if (normalizedUsername != null || password != null) {
+            if (normalizedUsername != null || hasPasswordInput) {
                 throw new InvalidFieldValueException("username",
                         "Cashier / Barista / Waiter không có tài khoản đăng nhập (chỉ dùng PIN).");
+            }
+            if (user.getUsername() != null || user.getPasswordHash() != null) {
+                user.setUsername(null);
+                user.setPasswordHash(null);
+                if (user.getId() != null) {
+                    refreshTokenStore.revokeAllOfUser(user.getId());
+                }
             }
             return;
         }
@@ -446,38 +543,48 @@ public class UserServiceImpl implements UserService {
                 throw new ConflictException(ErrorCode.DUPLICATE_USERNAME);
             }
             user.setUsername(normalizedUsername);
-        } else if (creating) {
+        } else if (creating || user.getUsername() == null) {
             throw new InvalidFieldValueException("username", "Tên đăng nhập là bắt buộc với COO / Branch Manager.");
         }
-        if (password != null) {
+        if (hasPasswordInput) {
             if (!ValidationUtil.PASSWORD.matcher(password).matches()) {
                 throw new InvalidFieldValueException("password", "Mật khẩu phải 8–72 ký tự, có chữ và số.");
             }
             user.setPasswordHash(passwordEncoder.encode(password));
-        } else if (creating && user.getPasswordHash() == null) {
+        } else if (creating || user.getPasswordHash() == null) {
             throw new InvalidFieldValueException("password", "Mật khẩu là bắt buộc với COO / Branch Manager.");
         }
     }
 
-    /** PIN unique trong chi nhánh (§7.2): so {@code pin_lookup_hash} với user ACTIVE khác. */
+    /** PIN unique trong chi nhánh (§7.2): chỉ nhân sự chi nhánh (Cashier/Barista/Waiter) dùng PIN; COO/BM không dùng PIN. */
     private void applyPin(User user, Integer branchId, String pin, boolean creating) {
         boolean hasPinInput = pin != null && !pin.isBlank();
+        if (!UserDirectory.requiresPin(user.getPosition())) {
+            if (hasPinInput) {
+                throw new InvalidFieldValueException("pin", "COO / Quản lý chi nhánh không sử dụng mã PIN.");
+            }
+            user.setPinHash(null);
+            user.setPinLookupHash(null);
+            user.setPinSetAt(null);
+            return;
+        }
         if (hasPinInput) {
             if (branchId == null) {
                 throw new InvalidFieldValueException("pin", "Chỉ nhân sự thuộc chi nhánh mới có PIN.");
             }
-            String lookupHash = pinHasher.lookupHash(branchId, pin);
+            String trimmedPin = pin.trim();
+            String lookupHash = pinHasher.lookupHash(branchId, trimmedPin);
             userRepository.findFirstByBranchIdAndPinLookupHashAndStatus(branchId, lookupHash, UserStatus.ACTIVE)
                     .filter(holder -> !Objects.equals(holder.getId(), user.getId()))
                     .ifPresent(holder -> {
                         throw new ConflictException(ErrorCode.DUPLICATE_PIN);
                     });
-            user.setPinHash(pinHasher.hash(pin));
+            user.setPinHash(pinHasher.hash(trimmedPin));
             user.setPinLookupHash(lookupHash);
             user.setPinSetAt(Instant.now());
             return;
         }
-        if (creating && UserDirectory.requiresPin(user.getPosition())) {
+        if (creating || user.getPinHash() == null) {
             throw new InvalidFieldValueException("pin", "PIN là bắt buộc với nhân sự chi nhánh.");
         }
     }
@@ -499,9 +606,14 @@ public class UserServiceImpl implements UserService {
         user.setCardCode(normalized);
     }
 
-    private void ensureBranchExists(Integer branchId) {
-        if (branchId != null && !branchRepository.existsById(branchId)) {
-            throw new InvalidFieldValueException("branchId", "Chi nhánh không tồn tại.");
+    private void requireValidBranch(Integer branchId, UserStatus targetStatus) {
+        if (branchId == null) {
+            return;
+        }
+        Branch branch = branchRepository.findById(branchId)
+                .orElseThrow(() -> new InvalidFieldValueException("branchId", "Chi nhánh không tồn tại."));
+        if (targetStatus == UserStatus.ACTIVE && branch.getStatus() == BranchStatus.INACTIVE) {
+            throw new InvalidFieldValueException("branchId", "Chi nhánh đã ngừng hoạt động.");
         }
     }
 

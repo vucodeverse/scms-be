@@ -1,5 +1,8 @@
 package edu.fpt.sba.scms.controller;
 
+import edu.fpt.sba.scms.model.Ingredient;
+import edu.fpt.sba.scms.repository.IngredientRepository;
+import edu.fpt.sba.scms.repository.RecipeRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -11,17 +14,10 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
-import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
-
-import edu.fpt.sba.scms.model.Category;
-import edu.fpt.sba.scms.model.Ingredient;
-import edu.fpt.sba.scms.repository.IngredientRepository;
-import edu.fpt.sba.scms.repository.RecipeRepository;
 
 import java.math.BigDecimal;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -227,6 +223,73 @@ class RecipeFlowIT {
                 .andExpect(jsonPath("$.data.size").value("L"))
                 .andExpect(jsonPath("$.data.estimatedCogs").value(4250.00))
                 .andExpect(jsonPath("$.data.items.length()").value(2));
+    }
+
+    @Test
+    @DisplayName("UC12 - Validation lỗi: nguyên liệu trùng giữa công thức chung và size riêng -> HTTP 400")
+    void saveRecipe_overlappingCommonAndSizeSpecificIngredient_failsWith400() throws Exception {
+        int productId = createProductWithSizes("Trà Trùng Chung Và Size");
+
+        mockMvc.perform(authed(put("/api/v1/products/" + productId + "/recipe")).contentType(JSON)
+                        .content(String.format("""
+                                {
+                                    "size": null,
+                                    "items": [{"ingredientId": %d, "quantityBase": 10.0000}]
+                                }""", activeIng1Id)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(authed(put("/api/v1/products/" + productId + "/recipe")).contentType(JSON)
+                        .content(String.format("""
+                                {
+                                    "size": "L",
+                                    "items": [{"ingredientId": %d, "quantityBase": 5.0000}]
+                                }""", activeIng1Id)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("items"));
+    }
+
+    @Test
+    @DisplayName("UC12 - Validation lỗi: không lưu công thức cho sản phẩm INACTIVE -> HTTP 400")
+    void saveRecipe_onInactiveProduct_failsWith400() throws Exception {
+        int productId = createProductWithSizes("Trà Ngừng Lưu Công Thức");
+        mockMvc.perform(authed(delete("/api/v1/products/" + productId))).andExpect(status().isOk());
+
+        mockMvc.perform(authed(put("/api/v1/products/" + productId + "/recipe")).contentType(JSON)
+                        .content(String.format("""
+                                {
+                                    "size": null,
+                                    "items": [{"ingredientId": %d, "quantityBase": 10.0000}]
+                                }""", activeIng1Id)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("productId"));
+    }
+
+    @Test
+    @DisplayName("UC12 - Xóa ProductSize đồng thời xóa công thức riêng của size đó")
+    void deleteProductSize_alsoDeletesSizeSpecificRecipe() throws Exception {
+        int productId = createProductWithSizes("Trà Xoá Size Sẽ Xoá Recipe");
+
+        mockMvc.perform(authed(put("/api/v1/products/" + productId + "/recipe")).contentType(JSON)
+                        .content(String.format("""
+                                {
+                                    "size": "L",
+                                    "items": [{"ingredientId": %d, "quantityBase": 20.0000}]
+                                }""", activeIng1Id)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(authed(delete("/api/v1/products/" + productId + "/sizes/L")))
+                .andExpect(status().isNoContent());
+
+        // Thêm lại size L -> không còn công thức cũ bị mồ côi
+        mockMvc.perform(authed(post("/api/v1/products/" + productId + "/sizes")).contentType(JSON)
+                        .content("""
+                                {"size":"L","price":42000}"""))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(authed(get("/api/v1/products/" + productId + "/recipe?size=L")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items").isEmpty());
     }
 
     @Test

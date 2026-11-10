@@ -1,18 +1,18 @@
 package edu.fpt.sba.scms.controller;
 
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.ObjectMapper;
+import edu.fpt.sba.scms.model.Category;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
-import edu.fpt.sba.scms.model.Category;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -306,6 +306,82 @@ class MasterDataIT {
     }
 
     @Test
+    void selling_product_cannot_be_created_or_updated_in_uncat_or_inactive_category() throws Exception {
+        String token = loginAsCoo();
+        int uncatId = seededUncatId();
+
+        mockMvc.perform(authed(post("/api/v1/products"), token).contentType(JSON)
+                        .content("""
+                                {"name":"Ban trong UNCAT","categoryId":%d,"status":"AVAILABLE"}"""
+                                .formatted(uncatId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("categoryId")));
+
+        int inactiveCategoryId = createCategory(token, "Danh mục Ngừng Bán", 75);
+        mockMvc.perform(authed(delete("/api/v1/menu-categories/{id}", inactiveCategoryId), token))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(authed(post("/api/v1/products"), token).contentType(JSON)
+                        .content("""
+                                {"name":"Ban trong INACTIVE","categoryId":%d,"status":"AVAILABLE"}"""
+                                .formatted(inactiveCategoryId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("categoryId")));
+    }
+
+    @Test
+    void product_default_size_must_exist_in_configured_sizes() throws Exception {
+        String token = loginAsCoo();
+        int categoryId = createCategory(token, "Danh mục DefaultSize", 76);
+        int productId = createProducts(token, categoryId, "defsize", 1)[0];
+
+        mockMvc.perform(authed(post("/api/v1/products/{id}/sizes", productId), token).contentType(JSON)
+                        .content("""
+                                {"size":"M","price":30000}"""))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(authed(put("/api/v1/products/{id}", productId), token).contentType(JSON)
+                        .content("""
+                                {"name":"defsize-00","categoryId":%d,"defaultSize":"L","status":"AVAILABLE"}"""
+                                .formatted(categoryId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("defaultSize")));
+    }
+
+    @Test
+    void product_toppings_rejects_inactive_topping() throws Exception {
+        String token = loginAsCoo();
+        int categoryId = createCategory(token, "Danh mục Topping Inactive", 77);
+        int productId = createProducts(token, categoryId, "topinact", 1)[0];
+
+        MvcResult topping = mockMvc.perform(authed(post("/api/v1/toppings"), token).contentType(JSON)
+                        .content("""
+                                {"name":"Topping Ngừng","defaultPrice":5000,"status":"INACTIVE"}"""))
+                .andExpect(status().isCreated())
+                .andReturn();
+        int inactiveToppingId = body(topping).path("id").asInt();
+
+        mockMvc.perform(authed(put("/api/v1/products/{id}/toppings", productId), token).contentType(JSON)
+                        .content("""
+                                {"items":[{"toppingId":%d,"extraPrice":6000,"isDefault":false}]}"""
+                                .formatted(inactiveToppingId)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("items")));
+    }
+
+    @Test
+    void product_keyword_search_matches_category_name() throws Exception {
+        String token = loginAsCoo();
+        String uniqueCatKeyword = "MatchaNhatBanUnique";
+        int categoryId = createCategory(token, uniqueCatKeyword, 78);
+        int productId = createProducts(token, categoryId, "DrinkKhongLienQuan", 1)[0];
+
+        mockMvc.perform(authed(get("/api/v1/products"), token).param("keyword", "nhatbanunique"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.content[*].id", hasItem(productId)));
+    }
+
+    @Test
     void product_hard_delete_removes_sizes_and_toppings() throws Exception {
         String token = loginAsCoo();
         int categoryId = createCategory(token, "Danh mục xoá sản phẩm", 80);
@@ -335,7 +411,8 @@ class MasterDataIT {
 
         mockMvc.perform(authed(delete("/api/v1/products/{id}", productId), token))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("INACTIVE"));
+                .andExpect(jsonPath("$.data.status").value("INACTIVE"))
+                .andExpect(jsonPath("$.data.categoryName").value("Danh mục xoá mềm"));
 
         mockMvc.perform(authed(get("/api/v1/products/{id}", productId), token))
                 .andExpect(status().isOk())

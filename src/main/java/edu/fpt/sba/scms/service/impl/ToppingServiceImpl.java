@@ -10,6 +10,7 @@ import edu.fpt.sba.scms.dto.request.SaveToppingRequest;
 import edu.fpt.sba.scms.dto.response.ToppingDto;
 import edu.fpt.sba.scms.mapper.ToppingMapper;
 import edu.fpt.sba.scms.model.Topping;
+import edu.fpt.sba.scms.repository.OrderItemToppingRepository;
 import edu.fpt.sba.scms.repository.ProductToppingRepository;
 import edu.fpt.sba.scms.repository.ToppingRepository;
 import edu.fpt.sba.scms.service.ToppingService;
@@ -33,6 +34,7 @@ public class ToppingServiceImpl implements ToppingService {
 
     private final ToppingRepository toppingRepository;
     private final ProductToppingRepository productToppingRepository;
+    private final OrderItemToppingRepository orderItemToppingRepository;
     private final ToppingMapper toppingMapper;
     private final AuditLogService auditLogService;
 
@@ -91,6 +93,10 @@ public class ToppingServiceImpl implements ToppingService {
     @Transactional
     public void hardDelete(Integer id) {
         Topping topping = getTopping(id);
+        if (orderItemToppingRepository.existsByToppingId(id)) {
+            throw new ConflictException(ErrorCode.RESOURCE_CONFLICT,
+                    "Topping đã phát sinh trong đơn hàng. Chỉ có thể xoá mềm (ngừng bán).");
+        }
         long linkedProducts = productToppingRepository.countByToppingId(id);
         // Gỡ liên kết trước để không còn dòng product_topping trỏ tới topping đã xoá (bảng không có FK cascade).
         productToppingRepository.deleteAllByToppingId(id);

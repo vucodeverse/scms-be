@@ -90,6 +90,11 @@ public class RefundServiceImpl implements RefundService {
                     "Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca #" + openShift.getId()
                             + ". Vui lòng hoàn tất kiểm két nhận ca trước khi chi hoàn tiền.");
         }
+        if (openShift.isEarlyClosePending()) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_EARLY_CLOSE_PENDING,
+                    "Ca #" + openShift.getId()
+                            + " đang chờ Quản lý chi nhánh xác nhận đóng ca sớm. Quầy POS tạm khóa cho đến khi được duyệt hoặc hủy yêu cầu.");
+        }
 
         // 5. Kiểm tra tiền két có đủ để chi trả hoàn tiền không qua ShiftCashCalculator
         BigDecimal currentCash = openShift.getExpectedCash() != null ? openShift.getExpectedCash() : BigDecimal.ZERO;

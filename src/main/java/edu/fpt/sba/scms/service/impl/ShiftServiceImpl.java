@@ -7,6 +7,9 @@ import edu.fpt.sba.scms.common.enums.BusinessErrorCode;
 import edu.fpt.sba.scms.common.enums.CashTransactionType;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
 import edu.fpt.sba.scms.common.enums.Roles;
+import edu.fpt.sba.scms.common.enums.SecurityAlertSeverity;
+import edu.fpt.sba.scms.common.enums.SecurityAlertStatus;
+import edu.fpt.sba.scms.common.enums.SecurityAlertType;
 import edu.fpt.sba.scms.common.enums.ShiftHandoverStatus;
 import edu.fpt.sba.scms.common.enums.ShiftStatus;
 import edu.fpt.sba.scms.common.enums.ShiftType;
@@ -25,12 +28,14 @@ import edu.fpt.sba.scms.domain.shift.ShiftCashCalculator;
 import edu.fpt.sba.scms.domain.shift.ShiftSchedulePolicy;
 import edu.fpt.sba.scms.dto.PageQueryDefaults;
 import edu.fpt.sba.scms.dto.request.AcceptShiftHandoverRequest;
+import edu.fpt.sba.scms.dto.request.ApproveEarlyCloseRequest;
 import edu.fpt.sba.scms.dto.request.CancelShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.CashAdjustmentRequest;
 import edu.fpt.sba.scms.dto.request.CloseShiftRequest;
 import edu.fpt.sba.scms.dto.request.CreateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.InitiateShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.OpenShiftRequest;
+import edu.fpt.sba.scms.dto.request.RejectEarlyCloseRequest;
 import edu.fpt.sba.scms.dto.request.UpdateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.query.ShiftListQuery;
 import edu.fpt.sba.scms.dto.response.BranchShiftOverviewResponse;
@@ -44,6 +49,7 @@ import edu.fpt.sba.scms.mapper.ShiftMapper;
 import edu.fpt.sba.scms.model.Attendance;
 import edu.fpt.sba.scms.model.Branch;
 import edu.fpt.sba.scms.model.CashTransaction;
+import edu.fpt.sba.scms.model.SecurityAlert;
 import edu.fpt.sba.scms.model.Shift;
 import edu.fpt.sba.scms.model.ShiftAssignment;
 import edu.fpt.sba.scms.model.ShiftAssignmentId;
@@ -52,6 +58,7 @@ import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.AttendanceRepository;
 import edu.fpt.sba.scms.repository.BranchRepository;
 import edu.fpt.sba.scms.repository.CashTransactionRepository;
+import edu.fpt.sba.scms.repository.SecurityAlertRepository;
 import edu.fpt.sba.scms.repository.ShiftAssignmentRepository;
 import edu.fpt.sba.scms.repository.ShiftHandoverRepository;
 import edu.fpt.sba.scms.repository.ShiftRepository;
@@ -62,6 +69,7 @@ import edu.fpt.sba.scms.security.principal.UserPrincipal;
 import edu.fpt.sba.scms.service.ShiftService;
 import edu.fpt.sba.scms.service.support.PinHasher;
 import edu.fpt.sba.scms.service.support.PinLockoutService;
+import edu.fpt.sba.scms.service.support.UserDirectory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -82,6 +90,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -111,6 +120,7 @@ public class ShiftServiceImpl implements ShiftService {
     private final AttendanceRepository attendanceRepository;
     private final UserRepository userRepository;
     private final BranchRepository branchRepository;
+    private final SecurityAlertRepository securityAlertRepository;
     private final PinHasher pinHasher;
     private final PinLockoutService pinLockoutService;
     private final AuditLogService auditLogService;
@@ -161,7 +171,7 @@ public class ShiftServiceImpl implements ShiftService {
         boolean autoCheckedIn = false;
         if (principal != null && Roles.CASHIER.code().equals(principal.role())) {
             autoCheckedIn = autoAssignAndCheckInCashier(
-                    savedShift, principal.userId(), now, "Tự động check-in khi mở ca #" + savedShift.getId());
+                    savedShift, principal.userId(), now, "Tự động check-in khi mở ca #" + savedShift.getId(), false);
         }
 
         String auditDetail = "Mở ca ID=" + savedShift.getId() + ", tiền đầu ca=" + request.openingCash();
@@ -186,6 +196,10 @@ public class ShiftServiceImpl implements ShiftService {
         if (shift.isHandoverPending()) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
                     "Két tiền đang tạm khóa chờ bàn giao giữa ca. Vui lòng hoàn tất hoặc hủy bàn giao trước khi nạp tiền.");
+        }
+        if (shift.isEarlyClosePending()) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_EARLY_CLOSE_PENDING,
+                    "Ca làm việc đang chờ Quản lý chi nhánh xác nhận đóng ca sớm. Vui lòng chờ duyệt hoặc hủy yêu cầu trước khi nạp tiền.");
         }
 
         User manager = resolveCashAdjustmentApprover(shift.getBranchId(), request.managerPin(), principal);
@@ -222,6 +236,10 @@ public class ShiftServiceImpl implements ShiftService {
         if (shift.isHandoverPending()) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
                     "Két tiền đang tạm khóa chờ bàn giao giữa ca. Vui lòng hoàn tất hoặc hủy bàn giao trước khi rút tiền.");
+        }
+        if (shift.isEarlyClosePending()) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_EARLY_CLOSE_PENDING,
+                    "Ca làm việc đang chờ Quản lý chi nhánh xác nhận đóng ca sớm. Vui lòng chờ duyệt hoặc hủy yêu cầu trước khi rút tiền.");
         }
 
         User manager = resolveCashAdjustmentApprover(shift.getBranchId(), request.managerPin(), principal);
@@ -266,6 +284,10 @@ public class ShiftServiceImpl implements ShiftService {
         if (shift.isHandoverPending()) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
                     "Ca làm việc đang có yêu cầu bàn giao két chờ xác nhận. Vui lòng hoàn tất hoặc hủy yêu cầu hiện tại trước.");
+        }
+        if (shift.isEarlyClosePending()) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_EARLY_CLOSE_PENDING,
+                    "Ca làm việc đang chờ Quản lý chi nhánh xác nhận đóng ca sớm. Vui lòng chờ duyệt hoặc hủy yêu cầu trước khi bàn giao két.");
         }
 
         Integer actorId = resolveActorId(principal);
@@ -439,12 +461,14 @@ public class ShiftServiceImpl implements ShiftService {
         Shift savedShift = shiftRepository.save(shift);
 
         boolean autoCheckedIn = false;
-        if (Roles.CASHIER.code().equals(incomingUser.roleCode())) {
+        if (incomingUser.getPosition() != null && UserDirectory.BRANCH_STAFF_ROLES.contains(incomingUser.getPosition())) {
             autoCheckedIn = autoAssignAndCheckInCashier(
                     savedShift,
                     incomingUser.getId(),
                     now,
-                    "Tự động check-in khi nhận bàn giao két ca #" + savedShift.getId());
+                    "Tự động check-in khi nhận bàn giao két ca #" + savedShift.getId()
+                            + (Roles.CASHIER.code().equals(incomingUser.roleCode()) ? "" : " (Gán tạm vai trò Thu ngân - Nhân sự thay thế)"),
+                    true);
         }
 
         auditLogService.log(AuditAction.SHIFT_OPEN, "shift", savedShift.getId(), null,
@@ -506,7 +530,8 @@ public class ShiftServiceImpl implements ShiftService {
                     savedShift,
                     actorId,
                     Instant.now(),
-                    "Tự động check-in lại sau khi hủy bàn giao két ca #" + savedShift.getId());
+                    "Tự động check-in lại sau khi hủy bàn giao két ca #" + savedShift.getId(),
+                    false);
         }
 
         auditLogService.log(AuditAction.SHIFT_OPEN, "shift", savedShift.getId(), "PENDING_RECEIVE",
@@ -526,12 +551,20 @@ public class ShiftServiceImpl implements ShiftService {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
                     "Két tiền đang chờ xác nhận bàn giao giữa ca. Vui lòng hoàn tất kiểm két nhận ca (hoặc hủy bàn giao) trước khi đóng ca.");
         }
+        if (shift.isEarlyClosePending() && isCashier(principal)) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_EARLY_CLOSE_PENDING,
+                    "Yêu cầu đóng ca sớm cho ca #" + shift.getId()
+                            + " đã được gửi và đang chờ Quản lý chi nhánh xác nhận. Vui lòng chờ Quản lý duyệt hoặc hủy yêu cầu để tiếp tục ca.");
+        }
 
         BigDecimal expected = shift.getExpectedCash() != null ? shift.getExpectedCash() : shift.getOpeningCash();
         BigDecimal counted = request.countedCash();
         BigDecimal variance = ShiftCashCalculator.calculateVariance(counted, expected);
+        String discrepancyReason = StringUtils.hasText(request.discrepancyReason())
+                ? request.discrepancyReason().trim()
+                : null;
 
-        if (ShiftCashCalculator.hasDiscrepancy(counted, expected) && !StringUtils.hasText(request.discrepancyReason())) {
+        if (ShiftCashCalculator.hasDiscrepancy(counted, expected) && !StringUtils.hasText(discrepancyReason)) {
             throw new BusinessRuleException(BusinessErrorCode.REASON_REQUIRED,
                     "Phát hiện chênh lệch tiền mặt thực tế so với sổ sách (" + variance.toPlainString()
                             + " đ). Bắt buộc phải nhập lý do giải trình theo quy định BR-38.");
@@ -544,23 +577,53 @@ public class ShiftServiceImpl implements ShiftService {
         Instant now = Instant.now();
         Integer actorId = resolveActorId(principal);
 
+        if (isCashier(principal) && ShiftSchedulePolicy.isEarlyClose(shift.getPlannedEnd(), now)) {
+            String earlyReason = StringUtils.hasText(request.earlyCloseReason())
+                    ? truncate(request.earlyCloseReason().trim(), MAX_REASON_LEN)
+                    : null;
+            shift.setEarlyClosePending(Boolean.TRUE);
+            shift.setEarlyCloseRequestedBy(actorId);
+            shift.setEarlyCloseRequestedAt(now);
+            shift.setEarlyCloseCountedCash(counted);
+            shift.setEarlyCloseVariance(variance);
+            shift.setEarlyCloseDiscrepancyReason(discrepancyReason);
+            shift.setEarlyCloseReason(earlyReason);
+
+            Shift savedShift = shiftRepository.save(shift);
+            String requesterName = resolveActorDisplayName(pinVerifiedActor, principal, actorId);
+            createEarlyCloseAlert(
+                    savedShift, actorId, requesterName, counted, expected, variance, earlyReason, discrepancyReason);
+
+            auditLogService.log(AuditAction.SHIFT_CLOSE, "shift", savedShift.getId(), "OPEN",
+                    "Yêu cầu đóng ca sớm chờ Quản lý duyệt shiftId=" + savedShift.getId()
+                            + ", requesterId=" + actorId
+                            + ", Counted=" + counted
+                            + ", Expected=" + expected
+                            + ", Variance=" + variance
+                            + (earlyReason != null ? ", Reason=" + earlyReason : ""));
+
+            log.info("Đã gửi yêu cầu đóng ca sớm chờ Quản lý xác nhận: shiftId={}, requesterId={}, plannedEnd={}, counted={}, variance={}",
+                    savedShift.getId(), actorId, savedShift.getPlannedEnd(), counted, variance);
+            return enrichShiftResponse(savedShift);
+        }
+
+        Integer previousEarlyRequesterId = shift.getEarlyCloseRequestedBy();
+        Integer previousActiveCashierId = shift.getActiveCashierId();
+        if (shift.isEarlyClosePending()) {
+            resolveEarlyCloseAlerts(shift.getId(), SecurityAlertStatus.APPROVED, principal, actorId, now,
+                    "Quản lý / COO xác nhận đóng ca trực tiếp cho ca #" + shift.getId() + ".");
+            shift.setEarlyClosePending(Boolean.FALSE);
+        }
+
         if (shift.isHandoverPending()) {
-            shiftHandoverRepository
-                    .findFirstByShiftIdAndStatusOrderByIdDesc(shift.getId(), ShiftHandoverStatus.PENDING_RECEIVE)
-                    .ifPresent(pending -> {
-                        pending.setStatus(ShiftHandoverStatus.CANCELLED);
-                        pending.setCancelledAt(now);
-                        pending.setCancelledBy(actorId);
-                        pending.setCancelReason("Hủy bàn giao tự động khi Quản lý/COO đóng hẳn ca làm việc.");
-                        shiftHandoverRepository.save(pending);
-                    });
+            cancelPendingHandoverOnForceClose(shift.getId(), actorId, now);
             shift.setHandoverPending(Boolean.FALSE);
         }
 
         shift.setStatus(ShiftStatus.CLOSED);
         shift.setCountedCash(counted);
         shift.setVariance(variance);
-        shift.setDiscrepancyReason(request.discrepancyReason());
+        shift.setDiscrepancyReason(discrepancyReason);
         shift.setClosedBy(actorId);
         shift.setClosedAt(now);
 
@@ -576,9 +639,28 @@ public class ShiftServiceImpl implements ShiftService {
                 .build();
         cashTransactionRepository.save(closeTx);
 
-        Long autoCheckOutMinutes = pinVerifiedActor != null
-                ? autoCheckOutOnShiftClose(pinVerifiedActor, savedShift, now)
-                : null;
+        Set<Integer> checkoutIds = new LinkedHashSet<>();
+        if (pinVerifiedActor != null) {
+            checkoutIds.add(pinVerifiedActor.getId());
+        }
+        if (previousEarlyRequesterId != null) {
+            checkoutIds.add(previousEarlyRequesterId);
+        }
+        if (previousActiveCashierId != null) {
+            checkoutIds.add(previousActiveCashierId);
+        }
+        List<Long> autoOutMinutesList = new ArrayList<>();
+        for (Integer uid : checkoutIds) {
+            boolean isPinActor = pinVerifiedActor != null && uid.equals(pinVerifiedActor.getId());
+            Long mins = isPinActor
+                    ? autoCheckOutForUserId(uid, savedShift.getId(), now,
+                            "Tự động check-out khi đóng ca #" + savedShift.getId())
+                    : autoCheckOutIfBranchStaff(uid, savedShift.getId(), now,
+                            "Tự động check-out khi Quản lý đóng ca #" + savedShift.getId());
+            if (mins != null) {
+                autoOutMinutesList.add(mins);
+            }
+        }
 
         String auditDetail = "Đóng ca ID=" + savedShift.getId()
                 + ", Counted=" + counted
@@ -586,14 +668,175 @@ public class ShiftServiceImpl implements ShiftService {
                 + ", Variance=" + variance;
         if (pinVerifiedActor != null) {
             auditDetail += ", pinVerified=true";
-            if (autoCheckOutMinutes != null) {
-                auditDetail += ", autoCheckOutWorkedMinutes=" + autoCheckOutMinutes;
-            }
+        }
+        if (!autoOutMinutesList.isEmpty()) {
+            auditDetail += ", autoCheckOutWorkedMinutes=" + autoOutMinutesList;
         }
         auditLogService.log(AuditAction.SHIFT_CLOSE, "shift", savedShift.getId(), null, auditDetail);
 
         log.info("Đóng ca thành công: shiftId={}, counted={}, expected={}, variance={}, autoCheckOutMinutes={}",
-                savedShift.getId(), counted, expected, variance, autoCheckOutMinutes);
+                savedShift.getId(), counted, expected, variance, autoOutMinutesList);
+        return enrichShiftResponse(savedShift);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ShiftResponse approveEarlyClose(Integer shiftId, ApproveEarlyCloseRequest request, UserPrincipal principal) {
+        if (principal == null) {
+            throw new UnauthorizedException(ErrorCode.AUTH_REQUIRED);
+        }
+        Shift shift = getOpenShiftForUpdateOrThrow(shiftId);
+        if (!shift.isEarlyClosePending()) {
+            throw new BusinessRuleException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Ca #" + shift.getId() + " hiện không có yêu cầu đóng ca sớm nào đang chờ xác nhận.");
+        }
+
+        Integer actorId = resolveActorId(principal);
+        if (request != null && StringUtils.hasText(request.pin())) {
+            verifyActorPinForUser(actorId, shift.getBranchId(), request.pin(), "SHIFT_EARLY_CLOSE_APPROVE");
+        }
+
+        BigDecimal counted = (request != null && request.countedCash() != null)
+                ? request.countedCash()
+                : shift.getEarlyCloseCountedCash();
+        if (counted == null) {
+            throw new InvalidFieldValueException("countedCash", "Số tiền kiểm đếm thực tế không được để trống.");
+        }
+
+        BigDecimal expected = shift.getExpectedCash() != null ? shift.getExpectedCash() : shift.getOpeningCash();
+        BigDecimal variance = ShiftCashCalculator.calculateVariance(counted, expected);
+        String discrepancyReason = request != null && StringUtils.hasText(request.discrepancyReason())
+                ? request.discrepancyReason().trim()
+                : shift.getEarlyCloseDiscrepancyReason();
+
+        if (ShiftCashCalculator.hasDiscrepancy(counted, expected) && !StringUtils.hasText(discrepancyReason)) {
+            throw new BusinessRuleException(BusinessErrorCode.REASON_REQUIRED,
+                    "Phát hiện chênh lệch tiền mặt thực tế so với sổ sách (" + variance.toPlainString()
+                            + " đ). Bắt buộc phải nhập lý do giải trình theo quy định BR-38.");
+        }
+
+        Instant now = Instant.now();
+        Integer requesterId = shift.getEarlyCloseRequestedBy();
+        Integer activeCashierId = shift.getActiveCashierId();
+
+        if (shift.isHandoverPending()) {
+            cancelPendingHandoverOnForceClose(shift.getId(), actorId, now);
+            shift.setHandoverPending(Boolean.FALSE);
+        }
+
+        shift.setEarlyClosePending(Boolean.FALSE);
+        shift.setStatus(ShiftStatus.CLOSED);
+        shift.setCountedCash(counted);
+        shift.setVariance(variance);
+        shift.setDiscrepancyReason(discrepancyReason);
+        shift.setClosedBy(actorId);
+        shift.setClosedAt(now);
+
+        Shift savedShift = shiftRepository.save(shift);
+
+        String approveNote = request != null && StringUtils.hasText(request.approveNote())
+                ? request.approveNote().trim()
+                : null;
+        String txReason = "Duyệt đóng ca sớm & kiểm kê két: Thực tế=" + counted + ", Chênh lệch=" + variance
+                + (approveNote != null ? " — " + approveNote : "");
+        CashTransaction closeTx = CashTransaction.builder()
+                .shiftId(savedShift.getId())
+                .type(CashTransactionType.CLOSE)
+                .amount(counted)
+                .reason(truncate(txReason, MAX_REASON_LEN))
+                .createdBy(requesterId != null ? requesterId : actorId)
+                .approvedBy(actorId)
+                .isSelfInitiated(false)
+                .build();
+        cashTransactionRepository.save(closeTx);
+
+        Set<Integer> checkoutIds = new LinkedHashSet<>();
+        if (requesterId != null) {
+            checkoutIds.add(requesterId);
+        }
+        if (activeCashierId != null) {
+            checkoutIds.add(activeCashierId);
+        }
+        List<Long> autoOutMinutes = new ArrayList<>();
+        for (Integer uid : checkoutIds) {
+            boolean isRequester = requesterId != null && requesterId.equals(uid);
+            Long mins = isRequester
+                    ? autoCheckOutForUserId(uid, savedShift.getId(), now,
+                            "Tự động check-out khi Quản lý duyệt đóng ca sớm #" + savedShift.getId())
+                    : autoCheckOutIfBranchStaff(uid, savedShift.getId(), now,
+                            "Tự động check-out khi Quản lý duyệt đóng ca sớm #" + savedShift.getId());
+            if (mins != null) {
+                autoOutMinutes.add(mins);
+            }
+        }
+
+        String alertNote = approveNote != null
+                ? approveNote
+                : "Đã duyệt đóng ca sớm #" + savedShift.getId() + " & tự động Check-out Thu ngân.";
+        resolveEarlyCloseAlerts(savedShift.getId(), SecurityAlertStatus.APPROVED, principal, actorId, now, alertNote);
+
+        auditLogService.log(AuditAction.SHIFT_CLOSE, "shift", savedShift.getId(), "EARLY_CLOSE_PENDING",
+                "Quản lý duyệt đóng ca sớm ID=" + savedShift.getId()
+                        + ", requesterId=" + requesterId
+                        + ", Counted=" + counted
+                        + ", Expected=" + expected
+                        + ", Variance=" + variance
+                        + (!autoOutMinutes.isEmpty() ? ", autoCheckOutWorkedMinutes=" + autoOutMinutes : "")
+                        + (approveNote != null ? ", note=" + approveNote : ""));
+
+        log.info("Đã duyệt đóng ca sớm thành công: shiftId={}, approverId={}, requesterId={}, counted={}, variance={}, autoCheckOutMinutes={}",
+                savedShift.getId(), actorId, requesterId, counted, variance, autoOutMinutes);
+        return enrichShiftResponse(savedShift);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ShiftResponse rejectEarlyClose(Integer shiftId, RejectEarlyCloseRequest request, UserPrincipal principal) {
+        if (principal == null) {
+            throw new UnauthorizedException(ErrorCode.AUTH_REQUIRED);
+        }
+        Shift shift = getOpenShiftForUpdateOrThrow(shiftId);
+        if (!shift.isEarlyClosePending()) {
+            throw new BusinessRuleException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Ca #" + shift.getId() + " hiện không ở trạng thái chờ duyệt đóng ca sớm.");
+        }
+
+        Integer actorId = resolveActorId(principal);
+        if (isCashier(principal)) {
+            boolean isSelfRequester = actorId != null
+                    && (actorId.equals(shift.getEarlyCloseRequestedBy()) || actorId.equals(shift.getActiveCashierId()));
+            if (!isSelfRequester) {
+                throw new ForbiddenException(ErrorCode.ACCESS_DENIED,
+                        "Chỉ Quản lý chi nhánh, COO hoặc Thu ngân đã gửi yêu cầu mới có quyền hủy yêu cầu đóng ca sớm này.");
+            }
+        }
+
+        Instant now = Instant.now();
+        boolean selfCancelled = isCashier(principal);
+        String rejectReason = request != null && StringUtils.hasText(request.reason())
+                ? request.reason().trim()
+                : (selfCancelled
+                        ? "Thu ngân tự hủy yêu cầu đóng ca sớm để tiếp tục bán hàng"
+                        : "Quản lý chi nhánh từ chối đóng ca sớm — tiếp tục mở lại quầy POS");
+
+        shift.setEarlyClosePending(Boolean.FALSE);
+        shift.setEarlyCloseRequestedBy(null);
+        shift.setEarlyCloseRequestedAt(null);
+        shift.setEarlyCloseCountedCash(null);
+        shift.setEarlyCloseVariance(null);
+        shift.setEarlyCloseDiscrepancyReason(null);
+        shift.setEarlyCloseReason(null);
+
+        Shift savedShift = shiftRepository.save(shift);
+        resolveEarlyCloseAlerts(savedShift.getId(), SecurityAlertStatus.REJECTED, principal, actorId, now, rejectReason);
+
+        auditLogService.log(AuditAction.SHIFT_OPEN, "shift", savedShift.getId(), "EARLY_CLOSE_PENDING",
+                (selfCancelled ? "Thu ngân tự hủy" : "Quản lý từ chối")
+                        + " yêu cầu đóng ca sớm shiftId=" + savedShift.getId()
+                        + ", lý do=" + rejectReason);
+
+        log.info("Đã từ chối / hủy yêu cầu đóng ca sớm: shiftId={}, actorId={}, selfCancelled={}",
+                savedShift.getId(), actorId, selfCancelled);
         return enrichShiftResponse(savedShift);
     }
 
@@ -728,7 +971,8 @@ public class ShiftServiceImpl implements ShiftService {
                     prevClosed != null ? prevClosed.getClosedAt() : null,
                     activeCashierId,
                     activeCashierId != null ? userNames.get(activeCashierId) : null,
-                    open != null && open.isHandoverPending()
+                    open != null && open.isHandoverPending(),
+                    open != null && open.isEarlyClosePending()
             );
         }).toList();
     }
@@ -767,10 +1011,12 @@ public class ShiftServiceImpl implements ShiftService {
     public ShiftScheduleResponse createSchedule(CreateScheduleShiftRequest request, UserPrincipal principal) {
         Integer branchId = BranchContext.resolveBranchScope(request.branchId());
 
-        if (!ShiftSchedulePolicy.isValidShiftTime(request.plannedStart(), request.plannedEnd())) {
+        LocalDate todayVN = DateTimeUtil.todayVN();
+        if (ShiftSchedulePolicy.isPastScheduleDate(request.shiftDate(), todayVN)) {
             throw new BusinessRuleException(BusinessErrorCode.INVALID_SHIFT_TIME,
-                    "Thời gian bắt đầu ca phải trước thời gian kết thúc.");
+                    "Không thể tạo lịch phân ca cho ngày đã qua (" + request.shiftDate() + ").");
         }
+        validateScheduleTiming(request.shiftDate(), request.shiftType(), request.plannedStart(), request.plannedEnd());
 
         List<Integer> empIds = deduplicateIds(request.assignedEmployeeIds());
         Map<Integer, String> normalizedRoles = validateAndNormalizeShiftRoles(request.employeeRoles());
@@ -788,14 +1034,14 @@ public class ShiftServiceImpl implements ShiftService {
                 .build();
         Shift savedShift = shiftRepository.save(shift);
 
-        List<ShiftAssignment> savedAssignments = assignEmployeesToShift(savedShift, empIds, userMap, normalizedRoles);
+        List<ShiftAssignment> savedAssignments = assignEmployeesToShift(savedShift, empIds, userMap, normalizedRoles, Set.of());
         List<Integer> assignedIds = savedAssignments.stream().map(a -> a.getId().getEmployeeId()).toList();
         Map<Integer, String> roleMap = buildRoleMap(savedAssignments, userMap);
 
         auditLogService.log(AuditAction.SCHEDULE_SAVE, "shift", savedShift.getId(), null,
                 "Tạo lịch ca ID=" + savedShift.getId() + " ngày " + request.shiftDate() + ", nhân viên: " + assignedIds);
 
-        return shiftMapper.toShiftScheduleResponse(savedShift, assignedIds, roleMap);
+        return shiftMapper.toShiftScheduleResponse(savedShift, assignedIds, roleMap, List.of());
     }
 
     @Override
@@ -809,9 +1055,27 @@ public class ShiftServiceImpl implements ShiftService {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_CLOSED,
                     "Ca làm việc đã đóng, không thể chỉnh sửa lịch hoặc phân công nhân sự.");
         }
-        if (!ShiftSchedulePolicy.isValidShiftTime(request.plannedStart(), request.plannedEnd())) {
-            throw new BusinessRuleException(BusinessErrorCode.INVALID_SHIFT_TIME,
-                    "Thời gian bắt đầu ca phải trước thời gian kết thúc.");
+        LocalDate todayVN = DateTimeUtil.todayVN();
+        if (shift.getStatus() == ShiftStatus.SCHEDULED) {
+            if (ShiftSchedulePolicy.isPastScheduleDate(shift.getShiftDate(), todayVN)) {
+                throw new BusinessRuleException(BusinessErrorCode.INVALID_SHIFT_TIME,
+                        "Lịch ca thuộc ngày đã qua (" + shift.getShiftDate() + "), không thể chỉnh sửa hoặc gán nhân sự.");
+            }
+            if (ShiftSchedulePolicy.isPastScheduleDate(request.shiftDate(), todayVN)) {
+                throw new BusinessRuleException(BusinessErrorCode.INVALID_SHIFT_TIME,
+                        "Không thể chuyển lịch phân ca sang ngày đã qua (" + request.shiftDate() + ").");
+            }
+            validateScheduleTiming(request.shiftDate(), request.shiftType(), request.plannedStart(), request.plannedEnd());
+        } else {
+            if (!ShiftSchedulePolicy.isValidShiftTime(request.plannedStart(), request.plannedEnd())) {
+                throw new BusinessRuleException(BusinessErrorCode.INVALID_SHIFT_TIME,
+                        "Thời gian bắt đầu ca phải trước thời gian kết thúc trong cùng ngày.");
+            }
+            boolean timesModified = !Objects.equals(shift.getPlannedStart(), request.plannedStart())
+                    || !Objects.equals(shift.getPlannedEnd(), request.plannedEnd());
+            if (timesModified) {
+                validateScheduleTiming(shift.getShiftDate(), shift.getShiftType(), request.plannedStart(), request.plannedEnd());
+            }
         }
 
         List<Integer> empIds = deduplicateIds(request.assignedEmployeeIds());
@@ -828,16 +1092,37 @@ public class ShiftServiceImpl implements ShiftService {
         shift.setPlannedEnd(request.plannedEnd());
         Shift savedShift = shiftRepository.save(shift);
 
+        List<ShiftAssignment> previousAssignments = shiftAssignmentRepository.findByIdShiftId(savedShift.getId());
+        Set<Integer> previouslyAssignedIds = previousAssignments.stream()
+                .map(a -> a.getId().getEmployeeId())
+                .collect(Collectors.toSet());
+        Set<Integer> replacementEmpIds = new HashSet<>(previousAssignments.stream()
+                .filter(a -> Boolean.TRUE.equals(a.getIsReplacement()))
+                .map(a -> a.getId().getEmployeeId())
+                .toList());
+
+        if (savedShift.getStatus() == ShiftStatus.OPEN) {
+            for (Integer empId : empIds) {
+                if (!previouslyAssignedIds.contains(empId)) {
+                    replacementEmpIds.add(empId);
+                }
+            }
+        }
+
         shiftAssignmentRepository.deleteByIdShiftId(savedShift.getId());
         shiftAssignmentRepository.flush();
-        List<ShiftAssignment> savedAssignments = assignEmployeesToShift(savedShift, empIds, userMap, normalizedRoles);
+        List<ShiftAssignment> savedAssignments = assignEmployeesToShift(savedShift, empIds, userMap, normalizedRoles, replacementEmpIds);
         List<Integer> assignedIds = savedAssignments.stream().map(a -> a.getId().getEmployeeId()).toList();
+        List<Integer> replacementIds = savedAssignments.stream()
+                .filter(a -> Boolean.TRUE.equals(a.getIsReplacement()))
+                .map(a -> a.getId().getEmployeeId())
+                .toList();
         Map<Integer, String> roleMap = buildRoleMap(savedAssignments, userMap);
 
         auditLogService.log(AuditAction.SCHEDULE_SAVE, "shift", savedShift.getId(), null,
                 "Cập nhật lịch ca ID=" + savedShift.getId() + " ngày " + savedShift.getShiftDate() + ", nhân viên: " + assignedIds);
 
-        return shiftMapper.toShiftScheduleResponse(savedShift, assignedIds, roleMap);
+        return shiftMapper.toShiftScheduleResponse(savedShift, assignedIds, roleMap, replacementIds);
     }
 
     @Override
@@ -870,8 +1155,12 @@ public class ShiftServiceImpl implements ShiftService {
         for (Shift s : shifts) {
             List<ShiftAssignment> assignments = shiftAssignmentRepository.findByIdShiftId(s.getId());
             List<Integer> empIds = assignments.stream().map(a -> a.getId().getEmployeeId()).toList();
+            List<Integer> replacementIds = assignments.stream()
+                    .filter(a -> Boolean.TRUE.equals(a.getIsReplacement()))
+                    .map(a -> a.getId().getEmployeeId())
+                    .toList();
             Map<Integer, String> roleMap = buildRoleMap(assignments, Map.of());
-            result.add(shiftMapper.toShiftScheduleResponse(s, empIds, roleMap));
+            result.add(shiftMapper.toShiftScheduleResponse(s, empIds, roleMap, replacementIds));
         }
         return result;
     }
@@ -893,6 +1182,7 @@ public class ShiftServiceImpl implements ShiftService {
             }
             List<ShiftAssignment> assignments = shiftAssignmentRepository.findByIdShiftId(s.getId());
             List<Integer> empIds;
+            List<Integer> replacementIds;
             Map<Integer, String> roleMap;
             if (cashierOnly) {
                 ShiftAssignment selfAssignment = actorId == null ? null : assignments.stream()
@@ -900,14 +1190,21 @@ public class ShiftServiceImpl implements ShiftService {
                         .findFirst()
                         .orElse(null);
                 empIds = selfAssignment != null ? List.of(actorId) : List.of();
+                replacementIds = selfAssignment != null && Boolean.TRUE.equals(selfAssignment.getIsReplacement())
+                        ? List.of(actorId)
+                        : List.of();
                 roleMap = selfAssignment != null && StringUtils.hasText(selfAssignment.getRoleInShift())
                         ? Map.of(actorId, selfAssignment.getRoleInShift())
                         : Map.of();
             } else {
                 empIds = assignments.stream().map(a -> a.getId().getEmployeeId()).toList();
+                replacementIds = assignments.stream()
+                        .filter(a -> Boolean.TRUE.equals(a.getIsReplacement()))
+                        .map(a -> a.getId().getEmployeeId())
+                        .toList();
                 roleMap = buildRoleMap(assignments, Map.of());
             }
-            result.add(shiftMapper.toShiftScheduleResponse(s, empIds, roleMap));
+            result.add(shiftMapper.toShiftScheduleResponse(s, empIds, roleMap, replacementIds));
         }
         return result;
     }
@@ -974,6 +1271,20 @@ public class ShiftServiceImpl implements ShiftService {
             if (scheduled.getStatus() == ShiftStatus.OPEN) {
                 throw new BusinessRuleException(BusinessErrorCode.SHIFT_ALREADY_OPEN);
             }
+            LocalDate todayVN = DateTimeUtil.todayVN();
+            if (ShiftSchedulePolicy.isTooEarlyToOpen(scheduled.getShiftDate(), scheduled.getPlannedStart(), now, todayVN)) {
+                String plannedTimeLabel = scheduled.getPlannedStart() != null
+                        ? scheduled.getShiftDate() + " lúc " + DateTimeUtil.formatHmVN(scheduled.getPlannedStart())
+                        : String.valueOf(scheduled.getShiftDate());
+                throw new BusinessRuleException(BusinessErrorCode.INVALID_SHIFT_TIME,
+                        "Chưa đến ca làm việc #" + scheduled.getId() + " (" + plannedTimeLabel
+                                + "). Chỉ được kiểm két mở ca trước giờ bắt đầu tối đa 60 phút.");
+            }
+            if (ShiftSchedulePolicy.isExpiredPastSchedule(scheduled.getShiftDate(), scheduled.getPlannedEnd(), now, todayVN)) {
+                throw new BusinessRuleException(BusinessErrorCode.INVALID_SHIFT_TIME,
+                        "Lịch ca #" + scheduled.getId() + " thuộc ngày đã qua (" + scheduled.getShiftDate()
+                                + ") đã quá giờ hoạt động, không thể mở ca.");
+            }
             scheduled.setStatus(ShiftStatus.OPEN);
             return scheduled;
         }
@@ -1018,6 +1329,7 @@ public class ShiftServiceImpl implements ShiftService {
         shift.setOpenedAt(now);
         shift.setActiveCashierId(actorId);
         shift.setHandoverPending(Boolean.FALSE);
+        shift.setEarlyClosePending(Boolean.FALSE);
         shift.setOpeningCash(openingCash);
         shift.setExpectedCash(openingCash);
         shift.setCashRevenue(BigDecimal.ZERO);
@@ -1140,6 +1452,9 @@ public class ShiftServiceImpl implements ShiftService {
             if (s.getActiveCashierId() != null) {
                 userIds.add(s.getActiveCashierId());
             }
+            if (s.getEarlyCloseRequestedBy() != null) {
+                userIds.add(s.getEarlyCloseRequestedBy());
+            }
             if (s.isHandoverPending() && s.getId() != null) {
                 pendingShiftIds.add(s.getId());
             }
@@ -1193,7 +1508,15 @@ public class ShiftServiceImpl implements ShiftService {
                     activeCashierId,
                     activeCashierId != null ? userNames.get(activeCashierId) : null,
                     s.isHandoverPending(),
-                    pendingDto
+                    pendingDto,
+                    s.isEarlyClosePending(),
+                    s.getEarlyCloseRequestedBy(),
+                    s.getEarlyCloseRequestedBy() != null ? userNames.get(s.getEarlyCloseRequestedBy()) : null,
+                    s.getEarlyCloseRequestedAt(),
+                    s.getEarlyCloseCountedCash(),
+                    s.getEarlyCloseVariance(),
+                    s.getEarlyCloseDiscrepancyReason(),
+                    s.getEarlyCloseReason()
             );
         }).toList();
     }
@@ -1425,6 +1748,21 @@ public class ShiftServiceImpl implements ShiftService {
         }
     }
 
+    private static void validateScheduleTiming(LocalDate shiftDate,
+                                               ShiftType shiftType,
+                                               Instant plannedStart,
+                                               Instant plannedEnd) {
+        if (!ShiftSchedulePolicy.isValidShiftTime(plannedStart, plannedEnd)) {
+            throw new BusinessRuleException(BusinessErrorCode.INVALID_SHIFT_TIME,
+                    "Thời gian bắt đầu ca phải trước thời gian kết thúc trong cùng ngày.");
+        }
+        if (!ShiftSchedulePolicy.isWithinShiftTypeWindow(shiftDate, shiftType, plannedStart, plannedEnd, VN_ZONE)) {
+            throw new BusinessRuleException(BusinessErrorCode.INVALID_SHIFT_TIME,
+                    shiftTypeLabel(shiftType) + " chỉ cho phép xếp lịch trong khoảng "
+                            + ShiftSchedulePolicy.windowLabel(shiftType) + " trong cùng ngày (" + shiftDate + ").");
+        }
+    }
+
     private static String shiftTypeLabel(ShiftType type) {
         if (type == null) {
             return "ca";
@@ -1440,7 +1778,8 @@ public class ShiftServiceImpl implements ShiftService {
             Shift shift,
             List<Integer> empIds,
             Map<Integer, User> userMap,
-            Map<Integer, String> normalizedRoles) {
+            Map<Integer, String> normalizedRoles,
+            Set<Integer> replacementEmpIds) {
         if (empIds.isEmpty()) {
             return List.of();
         }
@@ -1449,11 +1788,13 @@ public class ShiftServiceImpl implements ShiftService {
         for (Integer empId : empIds) {
             User emp = userMap.get(empId);
             String roleInShift = normalizedRoles.getOrDefault(empId, emp.roleCode());
+            boolean isReplacement = replacementEmpIds != null && replacementEmpIds.contains(empId);
             ShiftAssignment sa = ShiftAssignment.builder()
                     .id(new ShiftAssignmentId(shift.getId(), empId))
                     .shift(shift)
                     .employee(emp)
                     .roleInShift(roleInShift)
+                    .isReplacement(isReplacement)
                     .build();
             assignments.add(sa);
         }
@@ -1464,7 +1805,12 @@ public class ShiftServiceImpl implements ShiftService {
         return principal != null ? principal.userId() : null;
     }
 
-    private boolean autoAssignAndCheckInCashier(Shift savedShift, Integer cashierId, Instant now, String attendanceNote) {
+    private boolean autoAssignAndCheckInCashier(
+            Shift savedShift,
+            Integer cashierId,
+            Instant now,
+            String attendanceNote,
+            boolean isHandoverReplacement) {
         User cashier = userRepository.findWithRoleAndBranchById(cashierId).orElse(null);
         if (cashier == null || !cashier.isActive()) {
             return false;
@@ -1474,7 +1820,8 @@ public class ShiftServiceImpl implements ShiftService {
         }
 
         ShiftAssignmentId assignmentId = new ShiftAssignmentId(savedShift.getId(), cashierId);
-        if (!shiftAssignmentRepository.existsById(assignmentId)) {
+        ShiftAssignment existingSa = shiftAssignmentRepository.findById(assignmentId).orElse(null);
+        if (existingSa == null) {
             List<ShiftAssignment> conflicts = shiftAssignmentRepository.findConflictingAssignments(
                     cashierId, savedShift.getId(), savedShift.getPlannedStart(), savedShift.getPlannedEnd());
             if (conflicts.isEmpty()) {
@@ -1482,13 +1829,19 @@ public class ShiftServiceImpl implements ShiftService {
                         .id(assignmentId)
                         .shift(savedShift)
                         .employee(cashier)
-                        .roleInShift(cashier.roleCode())
+                        .roleInShift(Roles.CASHIER.code())
+                        .isReplacement(isHandoverReplacement)
                         .build();
                 shiftAssignmentRepository.save(sa);
             } else {
                 log.warn("Bỏ qua tự gán Thu ngân {} vào ca #{} do trùng khung giờ ca khác.",
                         cashierId, savedShift.getId());
             }
+        } else if (isHandoverReplacement && !Roles.CASHIER.code().equalsIgnoreCase(existingSa.getRoleInShift())) {
+            // Nhân viên vốn đã có lịch trong ca nhưng nhận bàn giao đứng quầy tạm thời:
+            // nâng role_in_shift thành CASHIER nhưng KHÔNG bật isReplacement để vẫn giữ nguyên theo dõi giờ công ca gốc.
+            existingSa.setRoleInShift(Roles.CASHIER.code());
+            shiftAssignmentRepository.save(existingSa);
         }
 
         if (attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(cashierId).isPresent()) {
@@ -1545,14 +1898,6 @@ public class ShiftServiceImpl implements ShiftService {
         return actor;
     }
 
-    private Long autoCheckOutOnShiftClose(User actor, Shift savedShift, Instant now) {
-        return autoCheckOutForUserId(
-                actor.getId(),
-                savedShift.getId(),
-                now,
-                "Tự động check-out khi đóng ca #" + savedShift.getId());
-    }
-
     private Long autoCheckOutForUserId(Integer userId, Integer shiftId, Instant now, String notePrefix) {
         return attendanceRepository
                 .findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(userId)
@@ -1568,6 +1913,129 @@ public class ShiftServiceImpl implements ShiftService {
                     return workedMinutes;
                 })
                 .orElse(null);
+    }
+
+    private Long autoCheckOutIfBranchStaff(Integer userId, Integer shiftId, Instant now, String notePrefix) {
+        if (userId == null) {
+            return null;
+        }
+        User target = userRepository.findWithRoleAndBranchById(userId).orElse(null);
+        if (target == null || target.getPosition() == null
+                || !UserDirectory.BRANCH_STAFF_ROLES.contains(target.getPosition())) {
+            return null;
+        }
+        return autoCheckOutForUserId(userId, shiftId, now, notePrefix);
+    }
+
+    private void cancelPendingHandoverOnForceClose(Integer shiftId, Integer actorId, Instant now) {
+        shiftHandoverRepository
+                .findFirstByShiftIdAndStatusOrderByIdDesc(shiftId, ShiftHandoverStatus.PENDING_RECEIVE)
+                .ifPresent(pending -> {
+                    pending.setStatus(ShiftHandoverStatus.CANCELLED);
+                    pending.setCancelledAt(now);
+                    pending.setCancelledBy(actorId);
+                    pending.setCancelReason("Hủy bàn giao tự động khi Quản lý/COO đóng hẳn ca làm việc.");
+                    shiftHandoverRepository.save(pending);
+                });
+    }
+
+    private void createEarlyCloseAlert(
+            Shift shift,
+            Integer requesterId,
+            String requesterName,
+            BigDecimal counted,
+            BigDecimal expected,
+            BigDecimal variance,
+            String earlyReason,
+            String discrepancyReason) {
+        String branchName = branchRepository.findById(shift.getBranchId())
+                .map(Branch::getName)
+                .orElse("Chi nhánh #" + shift.getBranchId());
+        String plannedEndHm = shift.getPlannedEnd() != null
+                ? DateTimeUtil.formatHmVN(shift.getPlannedEnd())
+                : "cuối ca";
+        String shiftLabel = shiftTypeLabel(shift.getShiftType()) + " #" + shift.getId();
+        boolean hasVariance = variance != null && variance.compareTo(BigDecimal.ZERO) != 0;
+
+        String title = "Yêu cầu đóng ca sớm · " + shiftLabel + " · " + requesterName;
+        StringBuilder msg = new StringBuilder();
+        msg.append(requesterName)
+                .append(" gửi yêu cầu đóng ")
+                .append(shiftLabel)
+                .append(" sớm hơn giờ kết thúc (").append(plannedEndHm).append(") tại ").append(branchName).append(". ")
+                .append("Kiểm két: ").append(counted != null ? counted.toPlainString() : "0").append(" đ")
+                .append(" (sổ sách ").append(expected != null ? expected.toPlainString() : "0").append(" đ");
+        if (hasVariance) {
+            msg.append(", lệch ").append(variance.toPlainString()).append(" đ");
+            if (StringUtils.hasText(discrepancyReason)) {
+                msg.append(" — ").append(discrepancyReason);
+            }
+        }
+        msg.append(").");
+        if (StringUtils.hasText(earlyReason)) {
+            msg.append(" Lý do: ").append(earlyReason);
+        }
+
+        SecurityAlert alert = SecurityAlert.builder()
+                .branchId(shift.getBranchId())
+                .branchName(branchName)
+                .alertType(SecurityAlertType.EARLY_SHIFT_CLOSE_REQUEST)
+                .severity(SecurityAlertSeverity.HIGH)
+                .status(SecurityAlertStatus.ACTIVE)
+                .targetUserId(requesterId)
+                .targetUserName(requesterName)
+                .targetRole(Roles.CASHIER.code())
+                .failureCount(0)
+                .referenceShiftId(shift.getId())
+                .title(truncate(title, 200))
+                .message(truncate(msg.toString(), 500))
+                .build();
+        securityAlertRepository.save(alert);
+    }
+
+    private void resolveEarlyCloseAlerts(
+            Integer shiftId,
+            SecurityAlertStatus finalStatus,
+            UserPrincipal actor,
+            Integer actorId,
+            Instant now,
+            String note) {
+        if (shiftId == null) {
+            return;
+        }
+        List<SecurityAlert> alerts = securityAlertRepository.findByReferenceShiftIdAndAlertTypeAndStatusIn(
+                shiftId,
+                SecurityAlertType.EARLY_SHIFT_CLOSE_REQUEST,
+                List.of(SecurityAlertStatus.ACTIVE, SecurityAlertStatus.ACKNOWLEDGED));
+        if (alerts.isEmpty()) {
+            return;
+        }
+        String resolverName = resolveActorDisplayName(null, actor, actorId);
+        for (SecurityAlert alert : alerts) {
+            alert.setStatus(finalStatus);
+            alert.setResolvedBy(actorId);
+            alert.setResolvedByName(resolverName);
+            alert.setResolvedAt(now);
+            alert.setResolveNote(truncate(note, 255));
+        }
+        securityAlertRepository.saveAll(alerts);
+    }
+
+    private String resolveActorDisplayName(User loadedUser, UserPrincipal principal, Integer actorId) {
+        if (loadedUser != null && StringUtils.hasText(loadedUser.getFullName())) {
+            return loadedUser.getFullName();
+        }
+        if (principal != null && StringUtils.hasText(principal.fullName())) {
+            return principal.fullName();
+        }
+        if (actorId != null) {
+            return userRepository.findById(actorId)
+                    .map(User::getFullName)
+                    .orElse(principal != null && StringUtils.hasText(principal.username())
+                            ? principal.username()
+                            : "Nhân viên #" + actorId);
+        }
+        return "Hệ thống";
     }
 
     private static String truncate(String s, int maxLen) {

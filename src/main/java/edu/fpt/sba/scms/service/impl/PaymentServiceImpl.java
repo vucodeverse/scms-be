@@ -68,8 +68,16 @@ public class PaymentServiceImpl implements PaymentService {
     @Transactional(rollbackFor = Exception.class)
     public OrderResponse createOrder(CreateOrderRequest request, UserPrincipal principal) {
         ensureDrawerNotLockedForHandover(request.branchId());
+        Integer resolvedShiftId = request.shiftId() != null
+                ? request.shiftId()
+                : (request.branchId() != null
+                        ? shiftRepository.findFirstByBranchIdAndStatusOrderByOpenedAtDesc(request.branchId(), ShiftStatus.OPEN)
+                                .map(Shift::getId)
+                                .orElse(null)
+                        : null);
         Order order = Order.builder()
                 .branchId(request.branchId())
+                .shiftId(resolvedShiftId)
                 .cashierId(principal != null ? principal.userId() : null)
                 .status(OrderStatus.PENDING)
                 .totalAmount(request.totalAmount())
@@ -389,11 +397,17 @@ public class PaymentServiceImpl implements PaymentService {
             return;
         }
         shiftRepository.findFirstByBranchIdAndStatusOrderByOpenedAtDesc(branchId, ShiftStatus.OPEN)
-                .filter(Shift::isHandoverPending)
                 .ifPresent(s -> {
-                    throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
-                            "Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca #" + s.getId()
-                                    + ". Vui lòng kiểm két nhận ca trước khi thanh toán.");
+                    if (s.isHandoverPending()) {
+                        throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
+                                "Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca #" + s.getId()
+                                        + ". Vui lòng kiểm két nhận ca trước khi thanh toán.");
+                    }
+                    if (s.isEarlyClosePending()) {
+                        throw new BusinessRuleException(BusinessErrorCode.SHIFT_EARLY_CLOSE_PENDING,
+                                "Ca #" + s.getId()
+                                        + " đang chờ Quản lý chi nhánh xác nhận đóng ca sớm. Quầy POS tạm khóa cho đến khi được duyệt hoặc hủy yêu cầu.");
+                    }
                 });
     }
 

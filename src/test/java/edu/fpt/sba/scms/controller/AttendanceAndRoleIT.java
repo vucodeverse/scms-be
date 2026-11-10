@@ -4,9 +4,11 @@ import edu.fpt.sba.scms.common.enums.Roles;
 import edu.fpt.sba.scms.common.enums.UserStatus;
 import edu.fpt.sba.scms.common.util.DateTimeUtil;
 import edu.fpt.sba.scms.model.Role;
+import edu.fpt.sba.scms.model.Shift;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.AttendanceRepository;
 import edu.fpt.sba.scms.repository.RoleRepository;
+import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.junit.jupiter.api.Test;
@@ -23,6 +25,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.hamcrest.Matchers.hasItem;
@@ -52,6 +55,9 @@ class AttendanceAndRoleIT {
     private AttendanceRepository attendanceRepository;
 
     @Autowired
+    private ShiftRepository shiftRepository;
+
+    @Autowired
     private UserRepository userRepository;
 
     @Autowired
@@ -70,13 +76,15 @@ class AttendanceAndRoleIT {
     }
 
     private int createBranch(String token, String code) throws Exception {
+        String phone = "091" + String.format("%07d", SEQ.incrementAndGet());
+        String email = "branch-" + code.toLowerCase() + "@scms.vn";
         MvcResult res = mockMvc.perform(post("/api/v1/branches")
                         .header("Authorization", "Bearer " + token)
                         .contentType(JSON)
                         .content("""
-                                {"code":"%s","name":"Chi nhánh %s","address":"1 Nguyen Trai","phone":"0901234567",
-                                 "email":"branch@scms.vn","openingTime":"07:00","closingTime":"22:00","tableCount":12,
-                                 "status":"OPEN"}""".formatted(code, code)))
+                                {"code":"%s","name":"Chi nhánh %s","address":"1 Nguyen Trai","phone":"%s",
+                                 "email":"%s","openingTime":"07:00","closingTime":"22:00","tableCount":12,
+                                 "status":"OPEN"}""".formatted(code, code, phone, email)))
                 .andExpect(status().isCreated())
                 .andReturn();
         return objectMapper.readTree(res.getResponse().getContentAsString()).path("data").path("id").asInt();
@@ -96,8 +104,8 @@ class AttendanceAndRoleIT {
     }
 
     private int scheduleShift(String token, int branchId, LocalDate shiftDate, int employeeId) throws Exception {
-        Instant start = shiftDate.atTime(8, 0).atZone(DateTimeUtil.VN).toInstant();
-        Instant end = shiftDate.atTime(16, 0).atZone(DateTimeUtil.VN).toInstant();
+        Instant start = shiftDate.atTime(7, 0).atZone(DateTimeUtil.VN).toInstant();
+        Instant end = shiftDate.atTime(12, 30).atZone(DateTimeUtil.VN).toInstant();
         MvcResult res = mockMvc.perform(post("/api/v1/shifts/schedules")
                         .header("Authorization", "Bearer " + token)
                         .contentType(JSON)
@@ -288,6 +296,11 @@ class AttendanceAndRoleIT {
         int seq2 = SEQ.incrementAndGet();
         int currentEmp = createStaff(token, branchId, "0986" + String.format("%06d", seq2), pinCurrent, "CUR" + seq2);
         int shiftId = scheduleShift(token, branchId, DateTimeUtil.todayVN(), currentEmp);
+        if (LocalTime.now(DateTimeUtil.VN).isBefore(LocalTime.of(6, 0))) {
+            Shift s = shiftRepository.findById(shiftId).orElseThrow();
+            s.setPlannedStart(Instant.now().minusSeconds(600));
+            shiftRepository.save(s);
+        }
 
         MvcResult openRes = mockMvc.perform(post("/api/v1/shifts/open")
                         .header("Authorization", "Bearer " + token)

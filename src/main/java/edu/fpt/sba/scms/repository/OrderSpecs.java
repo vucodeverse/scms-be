@@ -17,11 +17,19 @@ public final class OrderSpecs {
 
     public static Specification<Order> filter(Integer branchId, OrderStatus status,
                                               Instant fromDate, Instant toDate, String keyword) {
+        return filter(branchId, null, status, fromDate, toDate, keyword);
+    }
+
+    public static Specification<Order> filter(Integer branchId, Integer shiftId, OrderStatus status,
+                                              Instant fromDate, Instant toDate, String keyword) {
         return (root, query, cb) -> {
             var predicates = cb.conjunction();
 
             if (branchId != null) {
                 predicates = cb.and(predicates, cb.equal(root.get("branchId"), branchId));
+            }
+            if (shiftId != null) {
+                predicates = cb.and(predicates, cb.equal(root.get("shiftId"), shiftId));
             }
             if (status != null) {
                 predicates = cb.and(predicates, cb.equal(root.get("status"), status));

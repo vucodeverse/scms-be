@@ -94,10 +94,11 @@ class UserBranchIT {
     }
 
     private static String branchJson(String code) {
+        String seq = uniquePhones();
         return """
-                {"code":"%s","name":"Chi nhánh %s","address":"1 Nguyen Trai","phone":"0901234567",
-                 "email":"branch@scms.vn","openingTime":"07:00","closingTime":"22:00","tableCount":12,
-                 "status":"OPEN"}""".formatted(code, code);
+                {"code":"%s","name":"Chi nhánh %s","address":"1 Nguyen Trai","phone":"090%s",
+                 "email":"branch-%s@scms.vn","openingTime":"07:00","closingTime":"22:00","tableCount":12,
+                 "status":"OPEN"}""".formatted(code, code, seq, seq);
     }
 
     private static String staffJson(int branchId, String phone, String pin) {
@@ -118,9 +119,9 @@ class UserBranchIT {
 
     private static String managerJson(int branchId, String username) {
         return """
-                {"fullName":"Quan ly %s","phone":"0912223334","email":"%s@scms.vn","position":"BRANCH_MANAGER",
+                {"fullName":"Quan ly %s","phone":"091%s","email":"%s@scms.vn","position":"BRANCH_MANAGER",
                  "branchId":%d,"username":"%s","password":"Manager@123","status":"ACTIVE"}
-                """.formatted(username, username, branchId, username);
+                """.formatted(username, uniquePhones(), username, branchId, username);
     }
 
     private int createManager(String token, int branchId, String username) throws Exception {
@@ -128,16 +129,15 @@ class UserBranchIT {
                         .content(managerJson(branchId, username)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.username").value(username))
-
                 .andReturn();
         return objectMapper.readTree(body(result)).path("data").path("id").asInt();
     }
 
     private int createUnassignedManager(String token, String username) throws Exception {
         String payload = """
-                {"fullName":"Quan ly %s","phone":"0912223335","email":"%s@scms.vn","position":"BRANCH_MANAGER",
+                {"fullName":"Quan ly %s","phone":"092%s","email":"%s@scms.vn","position":"BRANCH_MANAGER",
                  "branchId":null,"username":"%s","password":"Manager@123","status":"ACTIVE"}
-                """.formatted(username, username, username);
+                """.formatted(username, uniquePhones(), username, username);
         MvcResult result = mockMvc.perform(authed(post("/api/v1/users"), token).contentType(JSON)
                         .content(payload))
                 .andExpect(status().isCreated())
@@ -188,6 +188,39 @@ class UserBranchIT {
     }
 
     @Test
+    void branch_duplicate_phone_and_email_return_409() throws Exception {
+        String token = cooToken();
+        String sharedPhone = "094" + uniquePhones();
+        String sharedEmail = "dupbranch-" + uniqueSuffix() + "@scms.vn";
+
+        String code1 = uniqueCode();
+        mockMvc.perform(authed(post("/api/v1/branches"), token).contentType(JSON)
+                        .content("""
+                                {"code":"%s","name":"Chi nhanh %s","address":"1 Nguyen Trai","phone":"%s",
+                                 "email":"%s","openingTime":"07:00","closingTime":"22:00","tableCount":10,
+                                 "status":"OPEN"}""".formatted(code1, code1, sharedPhone, sharedEmail)))
+                .andExpect(status().isCreated());
+
+        String code2 = uniqueCode();
+        mockMvc.perform(authed(post("/api/v1/branches"), token).contentType(JSON)
+                        .content("""
+                                {"code":"%s","name":"Chi nhanh %s","address":"2 Nguyen Trai","phone":"%s",
+                                 "email":"other-%s@scms.vn","openingTime":"07:00","closingTime":"22:00","tableCount":10,
+                                 "status":"OPEN"}""".formatted(code2, code2, sharedPhone, uniqueSuffix())))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DUPLICATE_PHONE"));
+
+        String code3 = uniqueCode();
+        mockMvc.perform(authed(post("/api/v1/branches"), token).contentType(JSON)
+                        .content("""
+                                {"code":"%s","name":"Chi nhanh %s","address":"3 Nguyen Trai","phone":"094%s",
+                                 "email":"%s","openingTime":"07:00","closingTime":"22:00","tableCount":10,
+                                 "status":"OPEN"}""".formatted(code3, code3, uniquePhones(), sharedEmail)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DUPLICATE_EMAIL"));
+    }
+
+    @Test
     void branch_closing_time_not_after_opening_returns_400() throws Exception {
         mockMvc.perform(authed(post("/api/v1/branches"), cooToken()).contentType(JSON)
                         .content(branchJson(uniqueCode())
@@ -214,6 +247,21 @@ class UserBranchIT {
     }
 
     @Test
+    void branch_with_open_shift_cannot_be_set_inactive() throws Exception {
+        String token = cooToken();
+        int branchId = createBranch(token, uniqueCode());
+
+        mockMvc.perform(authed(post("/api/v1/shifts/open"), token).contentType(JSON)
+                        .content("{\"branchId\":%d,\"openingCash\":1000000}".formatted(branchId)))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(authed(patch("/api/v1/branches/{id}/status", branchId), token).contentType(JSON)
+                        .content("{\"status\":\"INACTIVE\"}"))
+                .andExpect(status().isUnprocessableContent())
+                .andExpect(jsonPath("$.detailCode").value("SHIFT_ALREADY_OPEN"));
+    }
+
+    @Test
     void empty_branch_can_be_soft_deleted() throws Exception {
         String token = cooToken();
         int id = createBranch(token, uniqueCode());
@@ -221,6 +269,22 @@ class UserBranchIT {
         mockMvc.perform(authed(delete("/api/v1/branches/{id}", id), token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("INACTIVE"));
+    }
+
+    @Test
+    void public_kiosk_branches_endpoint_works_without_auth_and_excludes_inactive() throws Exception {
+        String token = cooToken();
+        String openCode = uniqueCode();
+        String inactiveCode = uniqueCode();
+        createBranch(token, openCode);
+        int inactiveId = createBranch(token, inactiveCode);
+        mockMvc.perform(authed(delete("/api/v1/branches/{id}", inactiveId), token))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/v1/auth/branches"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].code", hasItem(openCode)))
+                .andExpect(jsonPath("$.data[*].code", not(hasItem(inactiveCode))));
     }
 
     // ---------------- users ----------------
@@ -255,6 +319,37 @@ class UserBranchIT {
     }
 
     @Test
+    void user_duplicate_phone_and_email_return_409() throws Exception {
+        String token = cooToken();
+        int branchId = createBranch(token, uniqueCode());
+        String dupPhone = "095" + uniquePhones();
+        String dupEmail = "dupuser-" + uniqueSuffix() + "@scms.vn";
+
+        mockMvc.perform(authed(post("/api/v1/users"), token).contentType(JSON)
+                        .content("""
+                                {"fullName":"User 1","phone":"%s","email":"%s","position":"BARISTA",
+                                 "branchId":%d,"pin":"1122","status":"ACTIVE"}"""
+                                .formatted(dupPhone, dupEmail, branchId)))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(authed(post("/api/v1/users"), token).contentType(JSON)
+                        .content("""
+                                {"fullName":"User 2","phone":"%s","email":"other-%s@scms.vn","position":"BARISTA",
+                                 "branchId":%d,"pin":"1133","status":"ACTIVE"}"""
+                                .formatted(dupPhone, uniqueSuffix(), branchId)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DUPLICATE_PHONE"));
+
+        mockMvc.perform(authed(post("/api/v1/users"), token).contentType(JSON)
+                        .content("""
+                                {"fullName":"User 3","phone":"095%s","email":"%s","position":"BARISTA",
+                                 "branchId":%d,"pin":"1144","status":"ACTIVE"}"""
+                                .formatted(uniquePhones(), dupEmail, branchId)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DUPLICATE_EMAIL"));
+    }
+
+    @Test
     void staff_cannot_have_login_account() throws Exception {
         String token = cooToken();
         int branchId = createBranch(token, uniqueCode());
@@ -281,6 +376,81 @@ class UserBranchIT {
     }
 
     @Test
+    void same_pin_allowed_across_different_branches_but_blocked_in_same_branch() throws Exception {
+        String token = cooToken();
+        int branchA = createBranch(token, uniqueCode());
+        int branchB = createBranch(token, uniqueCode());
+
+        createStaff(token, branchA, "096" + uniquePhones(), "7788");
+        createStaff(token, branchB, "096" + uniquePhones(), "7788");
+
+        mockMvc.perform(authed(post("/api/v1/users"), token).contentType(JSON)
+                        .content(staffJson(branchA, "096" + uniquePhones(), "7788")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DUPLICATE_PIN"));
+    }
+
+    @Test
+    void branch_manager_cannot_set_pin_and_role_swap_syncs_branch_and_credentials() throws Exception {
+        String token = cooToken();
+        int branchId = createBranch(token, uniqueCode());
+
+        // BRANCH_MANAGER gửi kèm PIN -> 400
+        String badUsername = "bmpin" + uniqueSuffix();
+        mockMvc.perform(authed(post("/api/v1/users"), token).contentType(JSON)
+                        .content("""
+                                {"fullName":"BM Co Pin","phone":"097%s","email":"%s@scms.vn","position":"BRANCH_MANAGER",
+                                 "branchId":%d,"username":"%s","password":"Manager@123","pin":"1234","status":"ACTIVE"}"""
+                                .formatted(uniquePhones(), badUsername, branchId, badUsername)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[*].field", hasItem("pin")));
+
+        // Tạo BRANCH_MANAGER chuẩn (không PIN)
+        String mgrUsername = "bmswap" + uniqueSuffix();
+        String mgrPhone = "097" + uniquePhones();
+        MvcResult createdMgr = mockMvc.perform(authed(post("/api/v1/users"), token).contentType(JSON)
+                        .content("""
+                                {"fullName":"BM Swap","phone":"%s","email":"%s@scms.vn","position":"BRANCH_MANAGER",
+                                 "branchId":%d,"username":"%s","password":"Manager@123","status":"ACTIVE"}"""
+                                .formatted(mgrPhone, mgrUsername, branchId, mgrUsername)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.hasPin").value(false))
+                .andReturn();
+        int userId = objectMapper.readTree(body(createdMgr)).path("data").path("id").asInt();
+
+        // Hạ cấp BRANCH_MANAGER -> BARISTA: gỡ manager khỏi branch & xóa username, set PIN
+        mockMvc.perform(authed(put("/api/v1/users/{id}", userId), token).contentType(JSON)
+                        .content("""
+                                {"fullName":"Barista Swap","phone":"%s","position":"BARISTA",
+                                 "branchId":%d,"pin":"2468","status":"ACTIVE"}"""
+                                .formatted(mgrPhone, branchId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.roleCode").value("BARISTA"))
+                .andExpect(jsonPath("$.data.hasPin").value(true))
+                .andExpect(jsonPath("$.data.username").value(nullValue()));
+
+        mockMvc.perform(authed(get("/api/v1/branches/{id}", branchId), token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.managerUserId").value(nullValue()));
+
+        // Thăng cấp lại BARISTA -> BRANCH_MANAGER: gắn lại branch.managerUserId & xóa PIN
+        String newUsername = "bmswap2_" + uniqueSuffix();
+        mockMvc.perform(authed(put("/api/v1/users/{id}", userId), token).contentType(JSON)
+                        .content("""
+                                {"fullName":"BM Return","phone":"%s","email":"%s@scms.vn","position":"BRANCH_MANAGER",
+                                 "branchId":%d,"username":"%s","password":"Manager@123","status":"ACTIVE"}"""
+                                .formatted(mgrPhone, newUsername, branchId, newUsername)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.roleCode").value("BRANCH_MANAGER"))
+                .andExpect(jsonPath("$.data.hasPin").value(false))
+                .andExpect(jsonPath("$.data.username").value(newUsername));
+
+        mockMvc.perform(authed(get("/api/v1/branches/{id}", branchId), token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.managerUserId").value(userId));
+    }
+
+    @Test
     void duplicate_username_returns_409() throws Exception {
         String token = cooToken();
         int branchId = createBranch(token, uniqueCode());
@@ -288,7 +458,10 @@ class UserBranchIT {
         createManager(token, branchId, username);
 
         mockMvc.perform(authed(post("/api/v1/users"), token).contentType(JSON)
-                        .content(managerJson(branchId, username)))
+                        .content("""
+                                {"fullName":"Quan ly dup","phone":"091%s","email":"dup-%s@scms.vn","position":"BRANCH_MANAGER",
+                                 "branchId":%d,"username":"%s","password":"Manager@123","status":"ACTIVE"}
+                                """.formatted(uniquePhones(), uniqueSuffix(), branchId, username)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("DUPLICATE_USERNAME"));
     }
@@ -431,9 +604,9 @@ class UserBranchIT {
         String code1 = uniqueCode();
         MvcResult createdRes = mockMvc.perform(authed(post("/api/v1/branches"), coo).contentType(JSON)
                         .content("""
-                                {"code":"%s","name":"Chi nhanh %s","address":"1 Nguyen Trai","phone":"0901234567",
-                                 "email":"b1@scms.vn","openingTime":"07:00","closingTime":"22:00","tableCount":10,
-                                 "status":"OPEN","managerUserId":%d}""".formatted(code1, code1, mgr1)))
+                                {"code":"%s","name":"Chi nhanh %s","address":"1 Nguyen Trai","phone":"093%s",
+                                 "email":"b1-%s@scms.vn","openingTime":"07:00","closingTime":"22:00","tableCount":10,
+                                 "status":"OPEN","managerUserId":%d}""".formatted(code1, code1, uniquePhones(), uniqueSuffix(), mgr1)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.managerUserId").value(mgr1))
                 .andExpect(jsonPath("$.data.managerName").value("Quan ly " + user1))

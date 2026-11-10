@@ -10,6 +10,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -66,6 +67,14 @@ public class GlobalExceptionHandler {
                                                                  HttpServletRequest request) {
         log.warn("Xung đột ghi đồng thời at {}: {}", request.getRequestURI(), ex.getClass().getSimpleName());
         return ApiExceptionFactory.of(HttpStatus.CONFLICT, ErrorCode.INVALID_STATE_TRANSITION, request);
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiErrorResponse> handleDataIntegrity(DataIntegrityViolationException ex,
+                                                                HttpServletRequest request) {
+        log.warn("Xung đột ràng buộc dữ liệu at {}: {}", request.getRequestURI(), ex.getClass().getSimpleName());
+        return ApiExceptionFactory.build(HttpStatus.CONFLICT, ErrorCode.RESOURCE_CONFLICT.name(), null,
+                "Dữ liệu bị xung đột hoặc đang được tham chiếu, không thể thao tác.", request, null);
     }
 
     @ExceptionHandler(Exception.class)

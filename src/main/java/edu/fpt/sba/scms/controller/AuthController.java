@@ -7,6 +7,7 @@ import edu.fpt.sba.scms.dto.request.RefreshRequest;
 import edu.fpt.sba.scms.dto.request.RefreshTokenRequest;
 import edu.fpt.sba.scms.dto.response.CashierPinOptionDto;
 import edu.fpt.sba.scms.dto.response.CurrentUserResponse;
+import edu.fpt.sba.scms.dto.response.KioskBranchDto;
 import edu.fpt.sba.scms.dto.response.LoginResponse;
 import edu.fpt.sba.scms.dto.response.MessageResponse;
 import edu.fpt.sba.scms.dto.response.TokenResponse;
@@ -73,6 +74,13 @@ public class AuthController {
                     result.landing());
         }
         return result;
+    }
+
+    @Operation(summary = "Danh sách chi nhánh cho màn hình Kiosk / PIN",
+            description = "Public endpoint liệt kê chi nhánh đang hoạt động (trừ INACTIVE) để chọn tại quầy.")
+    @GetMapping("/branches")
+    public List<KioskBranchDto> listPublicBranches(@RequestParam(required = false) String keyword) {
+        return authService.listPublicBranches(keyword);
     }
 
     @Operation(summary = "Danh sách Thu ngân mở khóa PIN theo chi nhánh",

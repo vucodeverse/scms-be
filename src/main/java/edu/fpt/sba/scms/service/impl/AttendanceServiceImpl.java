@@ -1,11 +1,16 @@
 package edu.fpt.sba.scms.service.impl;
 
 import edu.fpt.sba.scms.common.enums.AttendanceStatus;
+import edu.fpt.sba.scms.common.enums.BranchStatus;
 import edu.fpt.sba.scms.common.enums.BusinessErrorCode;
+import edu.fpt.sba.scms.common.enums.ErrorCode;
+import edu.fpt.sba.scms.common.enums.Roles;
 import edu.fpt.sba.scms.common.enums.ShiftStatus;
 import edu.fpt.sba.scms.common.enums.ShiftType;
 import edu.fpt.sba.scms.common.enums.UserStatus;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
+import edu.fpt.sba.scms.common.exception.ForbiddenException;
+import edu.fpt.sba.scms.common.exception.InvalidFieldValueException;
 import edu.fpt.sba.scms.common.exception.InvalidPinException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
 import edu.fpt.sba.scms.common.exception.PinLockedException;
@@ -17,11 +22,14 @@ import edu.fpt.sba.scms.dto.response.AttendanceResultDto;
 import edu.fpt.sba.scms.dto.response.KioskEmployeeDto;
 import edu.fpt.sba.scms.mapper.AttendanceMapper;
 import edu.fpt.sba.scms.model.Attendance;
+import edu.fpt.sba.scms.model.Branch;
 import edu.fpt.sba.scms.model.Shift;
 import edu.fpt.sba.scms.model.ShiftAssignment;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.AttendanceRepository;
+import edu.fpt.sba.scms.repository.BranchRepository;
 import edu.fpt.sba.scms.repository.ShiftAssignmentRepository;
+import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
 import edu.fpt.sba.scms.service.AttendanceService;
 import edu.fpt.sba.scms.service.support.PinHasher;
@@ -52,7 +60,9 @@ public class AttendanceServiceImpl implements AttendanceService {
     private static final DateTimeFormatter HM_FORMATTER = DateTimeFormatter.ofPattern("HH:mm");
 
     private final AttendanceRepository attendanceRepository;
+    private final BranchRepository branchRepository;
     private final ShiftAssignmentRepository shiftAssignmentRepository;
+    private final ShiftRepository shiftRepository;
     private final UserRepository userRepository;
     private final PinHasher pinHasher;
     private final PinLockoutService pinLockoutService;
@@ -61,6 +71,7 @@ public class AttendanceServiceImpl implements AttendanceService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public AttendanceResultDto checkIn(PinAttendanceRequest request) {
+        requireActiveBranch(request.branchId());
         User user = authenticateByPin(request);
         Instant now = Instant.now();
         LocalDate todayVN = DateTimeUtil.todayVN();
@@ -93,6 +104,7 @@ public class AttendanceServiceImpl implements AttendanceService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public AttendanceResultDto checkOut(PinAttendanceRequest request) {
+        requireActiveBranch(request.branchId());
         User user = authenticateByPin(request);
         Instant now = Instant.now();
         LocalDate todayVN = DateTimeUtil.todayVN();
@@ -130,6 +142,7 @@ public class AttendanceServiceImpl implements AttendanceService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public AttendanceResultDto cardSwipe(CardAttendanceRequest request) {
+        requireActiveBranch(request.branchId());
         List<User> activeUsers = userRepository.findAllByBranchIdAndStatus(request.branchId(), UserStatus.ACTIVE);
         User user = activeUsers.stream()
                 .filter(u -> request.cardCode().equalsIgnoreCase(u.getCardCode()))
@@ -187,6 +200,17 @@ public class AttendanceServiceImpl implements AttendanceService {
     @Override
     @Transactional(readOnly = true)
     public List<KioskEmployeeDto> getKioskEmployees(Integer branchId) {
+        return getKioskEmployees(branchId, null, false, false);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<KioskEmployeeDto> getKioskEmployees(
+            Integer branchId,
+            Integer shiftId,
+            Boolean onlyAssigned,
+            Boolean excludeCashier) {
+        requireActiveBranch(branchId);
         List<User> users = userRepository.findAllByBranchIdAndStatus(branchId, UserStatus.ACTIVE);
         List<Attendance> openAttendances = attendanceRepository.findAllByBranchIdAndCheckOutTimeIsNull(branchId);
         Map<Integer, Attendance> openByUser = openAttendances.stream()
@@ -212,7 +236,33 @@ public class AttendanceServiceImpl implements AttendanceService {
 
         Map<Integer, Instant> activePinLocks = pinLockoutService.findActiveEmployeeLocks(branchId);
 
+        Shift specifiedShift = shiftId != null ? shiftRepository.findById(shiftId).orElse(null) : null;
+        Integer activeCashierId = specifiedShift != null ? specifiedShift.getActiveCashierId() : null;
+        Map<Integer, ShiftAssignment> targetSaByEmployee = specifiedShift != null
+                ? shiftAssignmentRepository.findByShiftIdWithEmployee(shiftId).stream()
+                        .collect(Collectors.toMap(sa -> sa.getId().getEmployeeId(), Function.identity(), (a, b) -> a))
+                : null;
+
         return users.stream()
+                .filter(u -> {
+                    if (Boolean.TRUE.equals(excludeCashier) && Roles.CASHIER.code().equals(u.roleCode())) {
+                        return false;
+                    }
+                    if (Boolean.TRUE.equals(excludeCashier) && activeCashierId != null && activeCashierId.equals(u.getId())) {
+                        return false;
+                    }
+                    if (targetSaByEmployee != null) {
+                        ShiftAssignment targetSa = targetSaByEmployee.get(u.getId());
+                        if (targetSa == null) {
+                            return false;
+                        }
+                        if (Boolean.TRUE.equals(excludeCashier)
+                                && Roles.CASHIER.code().equalsIgnoreCase(targetSa.getRoleInShift())) {
+                            return false;
+                        }
+                    }
+                    return true;
+                })
                 .map(u -> buildKioskDto(
                         u,
                         openByUser.get(u.getId()),
@@ -220,6 +270,8 @@ public class AttendanceServiceImpl implements AttendanceService {
                         activePinLocks.get(u.getId()),
                         now,
                         todayVN))
+                .filter(dto -> !Boolean.TRUE.equals(onlyAssigned) || dto.hasAssignedShift())
+                .filter(dto -> !Boolean.TRUE.equals(excludeCashier) || !Roles.CASHIER.code().equalsIgnoreCase(dto.role()))
                 .toList();
     }
 
@@ -377,6 +429,17 @@ public class AttendanceServiceImpl implements AttendanceService {
         String startHm = s.getPlannedStart().atZone(DateTimeUtil.VN).toLocalTime().format(HM_FORMATTER);
         String endHm = s.getPlannedEnd().atZone(DateTimeUtil.VN).toLocalTime().format(HM_FORMATTER);
         return typeLabel + " · " + startHm + "–" + endHm;
+    }
+
+    private void requireActiveBranch(Integer branchId) {
+        if (branchId == null) {
+            throw new InvalidFieldValueException("branchId", "Chi nhánh không được để trống.");
+        }
+        Branch branch = branchRepository.findById(branchId)
+                .orElseThrow(() -> new NotFoundException("chi nhánh"));
+        if (branch.getStatus() == BranchStatus.INACTIVE) {
+            throw new ForbiddenException(ErrorCode.ACCESS_DENIED, "Chi nhánh đã ngừng hoạt động.");
+        }
     }
 
     private User authenticateByPin(PinAttendanceRequest request) {

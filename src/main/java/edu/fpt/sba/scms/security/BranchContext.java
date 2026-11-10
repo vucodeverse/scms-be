@@ -52,7 +52,7 @@ public final class BranchContext {
     public static Integer resolveBranchScope(Integer requestedBranchId) {
         Info info = CURRENT.get();
         if (info == null) {
-            return requestedBranchId;
+            throw new ForbiddenException(ErrorCode.CROSS_BRANCH_DENIED);
         }
         if (info.isCoo()) {
             return requestedBranchId;

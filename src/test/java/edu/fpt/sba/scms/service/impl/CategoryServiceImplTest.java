@@ -35,7 +35,6 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -147,6 +146,18 @@ class CategoryServiceImplTest {
     }
 
     @Test
+    void update_to_inactive_blocked_when_selling_products_remain() {
+        when(categoryRepository.findById(1)).thenReturn(Optional.of(category(1, "CAT1", RecordStatus.ACTIVE)));
+        when(categoryRepository.existsByNameAndIdNot("Cà phê", 1)).thenReturn(false);
+        when(productRepository.existsByCategoryIdAndStatusIn(eq(1), any())).thenReturn(true);
+
+        assertThatThrownBy(() -> service.update(1, request(RecordStatus.INACTIVE)))
+                .isInstanceOf(BusinessRuleException.class)
+                .extracting(ex -> ((BusinessRuleException) ex).detailCode())
+                .isEqualTo(BusinessErrorCode.CATEGORY_NOT_EMPTY.name());
+    }
+
+    @Test
     void hard_delete_blocked_when_category_still_has_products() {
         when(categoryRepository.findById(1)).thenReturn(Optional.of(category(1, "CAT1", RecordStatus.INACTIVE)));
         when(productRepository.lockAllByCategoryId(1)).thenReturn(List.of(edu.fpt.sba.scms.model.Product.builder()
@@ -203,6 +214,17 @@ class CategoryServiceImplTest {
         assertThatThrownBy(() -> service.reorder(request))
                 .isInstanceOf(InvalidFieldValueException.class)
                 .hasMessageContaining("lặp");
+    }
+
+    @Test
+    void reorder_rejects_duplicate_sort_order() {
+        OrderCategoryRequest request = new OrderCategoryRequest(List.of(
+                new OrderCategoryRequest.Item(1, 5),
+                new OrderCategoryRequest.Item(2, 5)));
+
+        assertThatThrownBy(() -> service.reorder(request))
+                .isInstanceOf(InvalidFieldValueException.class)
+                .hasMessageContaining("sortOrder");
     }
 
     @Test

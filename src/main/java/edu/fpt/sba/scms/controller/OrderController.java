@@ -54,7 +54,7 @@ public class OrderController {
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER', 'STAFF')")
     public OrderDetailDto createOrder(
             @RequestBody @Valid CreateOrderRequest request,
             @AuthenticationPrincipal UserPrincipal principal) {
@@ -62,23 +62,29 @@ public class OrderController {
     }
 
     @Operation(summary = "Tra cứu danh sách đơn hàng POS (UC18)",
-            description = "Lọc đơn hàng theo chi nhánh, trạng thái, khoảng ngày giờ, từ khóa hóa đơn và phân trang.")
+            description = "Lọc đơn hàng theo chi nhánh, trạng thái, khoảng ngày giờ, từ khóa hóa đơn và phân trang. Thu ngân chỉ xem đơn thuộc ca hiện tại đang mở; Quản lý / COO xem toàn bộ.")
     @GetMapping
-    @PreAuthorize("permitAll()")
-    public PageResponse<OrderDto> listOrders(@ModelAttribute @Valid OrderListQuery query) {
-        return PageResponse.of(orderService.listOrders(query));
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER', 'STAFF')")
+    public PageResponse<OrderDto> listOrders(
+            @ModelAttribute @Valid OrderListQuery query,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return PageResponse.of(orderService.listOrders(query, principal));
     }
 
     @Operation(summary = "Xem chi tiết một đơn hàng theo ID (UC18)",
             description = "Trả về thông tin chi tiết đơn hàng kèm danh sách dòng món, topping và voucher áp dụng.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Lấy chi tiết đơn hàng thành công"),
+            @ApiResponse(responseCode = "403", description = "Thu ngân không có quyền xem đơn thuộc ca trước",
+                    content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
             @ApiResponse(responseCode = "404", description = "Không tìm thấy đơn hàng",
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @GetMapping("/{id}")
-    @PreAuthorize("permitAll()")
-    public OrderDetailDto getOrderById(@PathVariable Integer id) {
-        return orderService.getOrderById(id);
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER', 'STAFF')")
+    public OrderDetailDto getOrderById(
+            @PathVariable Integer id,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return orderService.getOrderById(id, principal);
     }
 
     @Operation(summary = "Áp dụng mã khuyến mãi / voucher cho đơn hàng (UC17)",
@@ -90,7 +96,7 @@ public class OrderController {
             @ApiResponse(responseCode = "422", description = "Voucher hết hạn, chưa đạt giá trị tối thiểu hoặc đơn đã có voucher",
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @PostMapping("/{id}/voucher")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER', 'STAFF')")
     public OrderDetailDto applyVoucher(
             @PathVariable Integer id,
             @RequestBody @Valid ApplyVoucherRequest request) {
@@ -100,7 +106,7 @@ public class OrderController {
     @Operation(summary = "Gỡ bỏ voucher khỏi đơn hàng (UC17)",
             description = "Hủy mã voucher đã áp dụng và khôi phục lại giá trị thanh toán gốc của đơn hàng.")
     @DeleteMapping("/{id}/voucher")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER', 'STAFF')")
     public OrderDetailDto removeVoucher(@PathVariable Integer id) {
         return orderService.removeVoucher(id);
     }
@@ -114,7 +120,7 @@ public class OrderController {
             @ApiResponse(responseCode = "422", description = "Đơn hàng đã thanh toán hoặc thiếu lý do hủy",
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))})
     @PostMapping("/{id}/cancel")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER', 'STAFF')")
     public OrderDto cancelOrder(
             @PathVariable Integer id,
             @RequestBody @Valid CancelOrderRequest request,

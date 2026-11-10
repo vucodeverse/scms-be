@@ -3,12 +3,14 @@ package edu.fpt.sba.scms.controller;
 import edu.fpt.sba.scms.dto.ApiErrorResponse;
 import edu.fpt.sba.scms.dto.PageResponse;
 import edu.fpt.sba.scms.dto.request.AcceptShiftHandoverRequest;
+import edu.fpt.sba.scms.dto.request.ApproveEarlyCloseRequest;
 import edu.fpt.sba.scms.dto.request.CancelShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.CashAdjustmentRequest;
 import edu.fpt.sba.scms.dto.request.CloseShiftRequest;
 import edu.fpt.sba.scms.dto.request.CreateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.InitiateShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.OpenShiftRequest;
+import edu.fpt.sba.scms.dto.request.RejectEarlyCloseRequest;
 import edu.fpt.sba.scms.dto.request.UpdateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.query.ShiftListQuery;
 import edu.fpt.sba.scms.dto.response.BranchShiftOverviewResponse;
@@ -141,7 +143,7 @@ public class ShiftController {
     }
 
     @Operation(summary = "Đóng ca & kiểm đếm tiền mặt két - Close Shift (UC27)",
-            description = "Thu ngân / Quản lý chốt ca, kiểm đếm số tiền mặt thực tế. Hệ thống đối soát và tính chênh lệch; nếu lệch bắt buộc giải trình (BR-38, BR-39).")
+            description = "Thu ngân / Quản lý chốt ca, kiểm đếm số tiền mặt thực tế. Nếu Thu ngân đóng sớm hơn 10 phút so với giờ dự kiến kết thúc sẽ gửi yêu cầu chờ Quản lý xác nhận; đúng giờ hoặc Quản lý đóng trực tiếp sẽ chốt đóng ca ngay.")
     @PostMapping("/{id}/close")
     @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
     public ShiftResponse closeShift(
@@ -149,6 +151,28 @@ public class ShiftController {
             @RequestBody @Valid CloseShiftRequest request,
             @AuthenticationPrincipal UserPrincipal principal) {
         return shiftService.closeShift(id, request, principal);
+    }
+
+    @Operation(summary = "Quản lý chi nhánh / COO xác nhận duyệt đóng ca sớm",
+            description = "Xác nhận yêu cầu đóng ca sớm từ Thu ngân, chốt số liệu đóng ca, tự động Check-out Thu ngân và hoàn tất thông báo chờ duyệt.")
+    @PostMapping("/{id}/early-close/approve")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER')")
+    public ShiftResponse approveEarlyClose(
+            @PathVariable Integer id,
+            @RequestBody(required = false) @Valid ApproveEarlyCloseRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return shiftService.approveEarlyClose(id, request, principal);
+    }
+
+    @Operation(summary = "Từ chối hoặc Thu ngân tự hủy yêu cầu đóng ca sớm",
+            description = "Quản lý chi nhánh / COO từ chối yêu cầu đóng ca sớm (hoặc chính Thu ngân gửi yêu cầu tự hủy) để mở khóa lại POS tiếp tục ca làm việc.")
+    @PostMapping("/{id}/early-close/reject")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER', 'CASHIER')")
+    public ShiftResponse rejectEarlyClose(
+            @PathVariable Integer id,
+            @RequestBody(required = false) @Valid RejectEarlyCloseRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return shiftService.rejectEarlyClose(id, request, principal);
     }
 
     @Operation(summary = "Xem tổng kết ca & số dư két hiện tại",

@@ -5,6 +5,7 @@ import edu.fpt.sba.scms.common.enums.AuditAction;
 import edu.fpt.sba.scms.common.enums.BusinessErrorCode;
 import edu.fpt.sba.scms.common.enums.DiscountType;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
+import edu.fpt.sba.scms.common.enums.ProductStatus;
 import edu.fpt.sba.scms.common.enums.RecordStatus;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
 import edu.fpt.sba.scms.common.exception.ConflictException;
@@ -24,9 +25,10 @@ import edu.fpt.sba.scms.model.Voucher;
 import edu.fpt.sba.scms.model.VoucherCategory;
 import edu.fpt.sba.scms.model.VoucherProduct;
 import edu.fpt.sba.scms.repository.CategoryRepository;
+import edu.fpt.sba.scms.repository.OrderVoucherRepository;
+import edu.fpt.sba.scms.repository.ProductRepository;
 import edu.fpt.sba.scms.repository.VoucherCategoryRepository;
 import edu.fpt.sba.scms.repository.VoucherProductRepository;
-import edu.fpt.sba.scms.repository.ProductRepository;
 import edu.fpt.sba.scms.repository.VoucherRepository;
 import edu.fpt.sba.scms.repository.VoucherSpecs;
 import edu.fpt.sba.scms.service.VoucherService;
@@ -46,7 +48,6 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /** UC13 — Manage Vouchers. */
@@ -72,6 +73,7 @@ public class VoucherServiceImpl implements VoucherService {
     private final CategoryRepository categoryRepository;
     private final VoucherProductRepository voucherProductRepository;
     private final VoucherCategoryRepository voucherCategoryRepository;
+    private final OrderVoucherRepository orderVoucherRepository;
     private final VoucherMapper voucherMapper;
     private final AuditLogService auditLogService;
 
@@ -122,10 +124,14 @@ public class VoucherServiceImpl implements VoucherService {
     @Override
     @Transactional
     public VoucherDetailDto update(Integer id, SaveVoucherRequest request) {
-        Voucher voucher = getVoucher(id);
-        if (voucher.getUsedCount() > 0) {
+        Voucher voucher = lockVoucher(id);
+        if (voucher.getUsedCount() > 0 || orderVoucherRepository.existsByVoucherId(id)) {
             throw new BusinessRuleException(BusinessErrorCode.VOUCHER_IN_USE,
                     BusinessErrorCode.VOUCHER_IN_USE.message() + " Tạo voucher mới nếu cần thay đổi điều kiện.");
+        }
+        String submittedCode = MasterDataText.requireText(request.code());
+        if (!submittedCode.equals(voucher.getCode())) {
+            throw new InvalidFieldValueException("code", "Mã voucher không thể thay đổi sau khi tạo.");
         }
         validateRequest(request);
         List<Integer> productIds = requireProducts(request.productIds());
@@ -149,7 +155,17 @@ public class VoucherServiceImpl implements VoucherService {
     @Override
     @Transactional
     public VoucherDto changeStatus(Integer id, SaveVoucherStatusRequest request) {
-        Voucher voucher = getVoucher(id);
+        Voucher voucher = lockVoucher(id);
+        if (request.status() == RecordStatus.ACTIVE) {
+            if (voucher.getEndDate() != null && voucher.getEndDate().isBefore(Instant.now())) {
+                throw new BusinessRuleException(BusinessErrorCode.VOUCHER_EXPIRED,
+                        "Voucher đã hết hạn, không thể kích hoạt lại.");
+            }
+            if (voucher.getUsageLimit() != null && voucher.getUsedCount() >= voucher.getUsageLimit()) {
+                throw new BusinessRuleException(BusinessErrorCode.VOUCHER_USAGE_EXCEEDED,
+                        "Voucher đã hết lượt sử dụng, không thể kích hoạt lại.");
+            }
+        }
         voucher.setStatus(request.status());
         auditLogService.log(AuditAction.VOUCHER_STATUS, ENTITY, id, null,
                 Map.of("status", request.status().name()));
@@ -165,10 +181,10 @@ public class VoucherServiceImpl implements VoucherService {
     @Override
     @Transactional
     public void hardDelete(Integer id) {
-        Voucher voucher = getVoucher(id);
-        if (voucher.getUsedCount() > 0) {
+        Voucher voucher = lockVoucher(id);
+        if (voucher.getUsedCount() > 0 || orderVoucherRepository.existsByVoucherId(id)) {
             throw new BusinessRuleException(BusinessErrorCode.VOUCHER_IN_USE,
-                    "Voucher đã được dùng " + voucher.getUsedCount() + " lần. Chỉ có thể xoá mềm để giữ lịch sử.");
+                    "Voucher đã được dùng hoặc đang gắn với đơn hàng. Chỉ có thể xoá mềm để giữ lịch sử.");
         }
         voucherProductRepository.deleteAllByVoucherId(id);
         voucherCategoryRepository.deleteAllByVoucherId(id);
@@ -209,9 +225,17 @@ public class VoucherServiceImpl implements VoucherService {
         if (ids.isEmpty()) {
             return ids;
         }
-        long found = productRepository.findAllById(ids).size();
-        if (found != ids.size()) {
+        List<Product> found = productRepository.findAllById(ids);
+        if (found.size() != ids.size()) {
             throw new InvalidFieldValueException("productIds", "Có sản phẩm không tồn tại.");
+        }
+        List<Integer> inactiveIds = found.stream()
+                .filter(p -> p.getStatus() == ProductStatus.INACTIVE)
+                .map(Product::getId)
+                .toList();
+        if (!inactiveIds.isEmpty()) {
+            throw new InvalidFieldValueException("productIds",
+                    "Không thể gắn sản phẩm đã ngừng kinh doanh vào voucher: " + inactiveIds + ".");
         }
         return ids;
     }
@@ -221,9 +245,17 @@ public class VoucherServiceImpl implements VoucherService {
         if (ids.isEmpty()) {
             return ids;
         }
-        long found = categoryRepository.findAllById(ids).size();
-        if (found != ids.size()) {
+        List<Category> found = categoryRepository.findAllById(ids);
+        if (found.size() != ids.size()) {
             throw new InvalidFieldValueException("categoryIds", "Có danh mục không tồn tại.");
+        }
+        List<Integer> invalidIds = found.stream()
+                .filter(c -> c.isSystemCategory() || c.getStatus() != RecordStatus.ACTIVE)
+                .map(Category::getId)
+                .toList();
+        if (!invalidIds.isEmpty()) {
+            throw new InvalidFieldValueException("categoryIds",
+                    "Không thể gắn danh mục hệ thống hoặc danh mục đã ngừng hoạt động vào voucher: " + invalidIds + ".");
         }
         return ids;
     }
@@ -256,6 +288,10 @@ public class VoucherServiceImpl implements VoucherService {
 
     private Voucher getVoucher(Integer id) {
         return voucherRepository.findById(id).orElseThrow(() -> new NotFoundException(RESOURCE_NAME));
+    }
+
+    private Voucher lockVoucher(Integer id) {
+        return voucherRepository.findByIdForUpdate(id).orElseThrow(() -> new NotFoundException(RESOURCE_NAME));
     }
 
     private static List<Integer> distinct(Collection<Integer> ids) {

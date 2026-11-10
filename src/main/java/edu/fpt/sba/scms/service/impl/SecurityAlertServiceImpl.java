@@ -3,6 +3,7 @@ package edu.fpt.sba.scms.service.impl;
 import edu.fpt.sba.scms.common.audit.AuditLogService;
 import edu.fpt.sba.scms.common.enums.AuditAction;
 import edu.fpt.sba.scms.common.enums.SecurityAlertStatus;
+import edu.fpt.sba.scms.common.enums.SecurityAlertType;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
 import edu.fpt.sba.scms.dto.response.SecurityAlertDto;
 import edu.fpt.sba.scms.dto.response.SecurityAlertSummaryDto;
@@ -111,15 +112,20 @@ public class SecurityAlertServiceImpl implements SecurityAlertService {
     }
 
     private SecurityAlertDto toDto(SecurityAlert alert, Map<String, Instant> activeLocks, Instant now) {
-        String key = PinLockoutService.lockKey(alert.getBranchId(), alert.getTargetUserId());
-        Instant liveLockedUntil = activeLocks.get(key);
-        boolean currentlyLocked = liveLockedUntil != null
-                && liveLockedUntil.isAfter(now)
-                && alert.getStatus() != SecurityAlertStatus.UNLOCKED;
-        long remainingSeconds = currentlyLocked
-                ? Math.max(1, Duration.between(now, liveLockedUntil).toSeconds())
-                : 0;
-        Instant displayLockedUntil = currentlyLocked ? liveLockedUntil : alert.getLockedUntil();
+        boolean currentlyLocked = false;
+        long remainingSeconds = 0;
+        Instant displayLockedUntil = alert.getLockedUntil();
+        if (alert.getAlertType() == SecurityAlertType.KIOSK_PIN_LOCKED) {
+            String key = PinLockoutService.lockKey(alert.getBranchId(), alert.getTargetUserId());
+            Instant liveLockedUntil = activeLocks.get(key);
+            currentlyLocked = liveLockedUntil != null
+                    && liveLockedUntil.isAfter(now)
+                    && alert.getStatus() != SecurityAlertStatus.UNLOCKED;
+            remainingSeconds = currentlyLocked
+                    ? Math.max(1, Duration.between(now, liveLockedUntil).toSeconds())
+                    : 0;
+            displayLockedUntil = currentlyLocked ? liveLockedUntil : alert.getLockedUntil();
+        }
 
         return new SecurityAlertDto(
                 alert.getId(),
@@ -141,7 +147,8 @@ public class SecurityAlertServiceImpl implements SecurityAlertService {
                 alert.getResolvedByName(),
                 alert.getResolvedAt(),
                 alert.getResolveNote(),
-                alert.getCreatedAt()
+                alert.getCreatedAt(),
+                alert.getReferenceShiftId()
         );
     }
 

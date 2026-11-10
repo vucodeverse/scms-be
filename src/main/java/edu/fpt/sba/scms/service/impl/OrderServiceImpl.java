@@ -3,13 +3,17 @@ package edu.fpt.sba.scms.service.impl;
 import edu.fpt.sba.scms.common.audit.AuditLogService;
 import edu.fpt.sba.scms.common.enums.AuditAction;
 import edu.fpt.sba.scms.common.enums.BusinessErrorCode;
-import edu.fpt.sba.scms.common.enums.DiscountType;
+import edu.fpt.sba.scms.common.enums.ErrorCode;
 import edu.fpt.sba.scms.common.enums.OrderStatus;
+import edu.fpt.sba.scms.common.enums.ProductSizeName;
 import edu.fpt.sba.scms.common.enums.ProductStatus;
 import edu.fpt.sba.scms.common.enums.RecordStatus;
+import edu.fpt.sba.scms.common.enums.Roles;
 import edu.fpt.sba.scms.common.enums.ShiftStatus;
 import edu.fpt.sba.scms.common.enums.SortDirection;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
+import edu.fpt.sba.scms.common.exception.ForbiddenException;
+import edu.fpt.sba.scms.common.exception.InvalidFieldValueException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
 import edu.fpt.sba.scms.domain.order.OrderPricingCalculator;
 import edu.fpt.sba.scms.domain.order.OrderStatePolicy;
@@ -26,22 +30,32 @@ import edu.fpt.sba.scms.dto.response.OrderItemToppingDto;
 import edu.fpt.sba.scms.dto.response.OrderLineDto;
 import edu.fpt.sba.scms.dto.response.OrderVoucherDto;
 import edu.fpt.sba.scms.mapper.OrderMapper;
+import edu.fpt.sba.scms.model.Category;
 import edu.fpt.sba.scms.model.Order;
 import edu.fpt.sba.scms.model.OrderItemTopping;
 import edu.fpt.sba.scms.model.OrderLine;
 import edu.fpt.sba.scms.model.OrderVoucher;
 import edu.fpt.sba.scms.model.Product;
+import edu.fpt.sba.scms.model.ProductSize;
+import edu.fpt.sba.scms.model.ProductTopping;
 import edu.fpt.sba.scms.model.Shift;
 import edu.fpt.sba.scms.model.Topping;
 import edu.fpt.sba.scms.model.Voucher;
+import edu.fpt.sba.scms.model.VoucherCategory;
+import edu.fpt.sba.scms.model.VoucherProduct;
+import edu.fpt.sba.scms.repository.CategoryRepository;
 import edu.fpt.sba.scms.repository.OrderItemToppingRepository;
 import edu.fpt.sba.scms.repository.OrderLineRepository;
 import edu.fpt.sba.scms.repository.OrderRepository;
 import edu.fpt.sba.scms.repository.OrderSpecs;
 import edu.fpt.sba.scms.repository.OrderVoucherRepository;
 import edu.fpt.sba.scms.repository.ProductRepository;
+import edu.fpt.sba.scms.repository.ProductSizeRepository;
+import edu.fpt.sba.scms.repository.ProductToppingRepository;
 import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.repository.ToppingRepository;
+import edu.fpt.sba.scms.repository.VoucherCategoryRepository;
+import edu.fpt.sba.scms.repository.VoucherProductRepository;
 import edu.fpt.sba.scms.repository.VoucherRepository;
 import edu.fpt.sba.scms.security.BranchContext;
 import edu.fpt.sba.scms.security.principal.UserPrincipal;
@@ -59,7 +73,12 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -71,11 +90,30 @@ public class OrderServiceImpl implements OrderService {
     private final OrderItemToppingRepository orderItemToppingRepository;
     private final OrderVoucherRepository orderVoucherRepository;
     private final VoucherRepository voucherRepository;
+    private final VoucherProductRepository voucherProductRepository;
+    private final VoucherCategoryRepository voucherCategoryRepository;
     private final ProductRepository productRepository;
+    private final ProductSizeRepository productSizeRepository;
+    private final ProductToppingRepository productToppingRepository;
+    private final CategoryRepository categoryRepository;
     private final ShiftRepository shiftRepository;
     private final ToppingRepository toppingRepository;
     private final AuditLogService auditLogService;
     private final OrderMapper orderMapper;
+
+    private record ResolvedTopping(Topping topping, BigDecimal extraPrice) {
+    }
+
+    private record ResolvedOrderLine(
+            CreateOrderLineRequest request,
+            Product product,
+            String effectiveSize,
+            BigDecimal effectiveUnitPrice,
+            List<ResolvedTopping> toppings,
+            BigDecimal toppingTotal,
+            BigDecimal lineTotal
+    ) {
+    }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -85,10 +123,11 @@ public class OrderServiceImpl implements OrderService {
         Integer cashierId = principal != null ? principal.userId() : null;
 
         List<CreateOrderLineRequest> lineRequests = resolveLineRequests(request);
-        BigDecimal totalAmount = calculateTotalAmount(lineRequests, request);
+        List<ResolvedOrderLine> resolvedLines = resolveOrderLines(lineRequests);
+        BigDecimal totalAmount = calculateTotalAmount(resolvedLines, request);
 
         Order savedOrder = saveNewOrder(request, branchId, cashierId, totalAmount);
-        List<OrderLineDto> lineDtos = saveAllLinesWithToppings(lineRequests, savedOrder.getId());
+        List<OrderLineDto> lineDtos = saveAllLinesWithToppings(resolvedLines, savedOrder.getId());
 
         log.info("Tạo đơn hàng POS ID={} tại chi nhánh {}, tổng thanh toán={}",
                 savedOrder.getId(), savedOrder.getBranchId(), savedOrder.getFinalAmount());
@@ -101,11 +140,17 @@ public class OrderServiceImpl implements OrderService {
             return;
         }
         shiftRepository.findFirstByBranchIdAndStatusOrderByOpenedAtDesc(branchId, ShiftStatus.OPEN)
-                .filter(Shift::isHandoverPending)
                 .ifPresent(s -> {
-                    throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
-                            "Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca #" + s.getId()
-                                    + ". Vui lòng kiểm két nhận ca trước khi tạo đơn POS mới.");
+                    if (s.isHandoverPending()) {
+                        throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
+                                "Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca #" + s.getId()
+                                        + ". Vui lòng kiểm két nhận ca trước khi tạo đơn POS mới.");
+                    }
+                    if (s.isEarlyClosePending()) {
+                        throw new BusinessRuleException(BusinessErrorCode.SHIFT_EARLY_CLOSE_PENDING,
+                                "Ca #" + s.getId()
+                                        + " đang chờ Quản lý chi nhánh xác nhận đóng ca sớm. Quầy POS tạm khóa cho đến khi được duyệt hoặc hủy yêu cầu.");
+                    }
                 });
     }
 
@@ -117,31 +162,36 @@ public class OrderServiceImpl implements OrderService {
         return request.lines();
     }
 
-    /**
-     * Tính tổng tiền hàng: duyệt từng line, gọi {@link OrderPricingCalculator#calculateLineTotal}
-     * và cộng dồn — không ghi DB.
-     */
-    private BigDecimal calculateTotalAmount(List<CreateOrderLineRequest> lineRequests,
-                                            CreateOrderRequest request) {
+    private List<ResolvedOrderLine> resolveOrderLines(List<CreateOrderLineRequest> lineRequests) {
         if (lineRequests.isEmpty()) {
-            return request.totalAmount() != null ? request.totalAmount() : BigDecimal.ZERO;
+            return List.of();
         }
-        BigDecimal total = BigDecimal.ZERO;
+        List<ResolvedOrderLine> resolved = new ArrayList<>(lineRequests.size());
         for (CreateOrderLineRequest lineReq : lineRequests) {
-            BigDecimal toppingTotal = fetchToppingTotal(lineReq.toppingIds());
-            total = total.add(OrderPricingCalculator.calculateLineTotal(lineReq.unitPrice(), toppingTotal, lineReq.quantity()));
+            Product product = requireAvailableProduct(lineReq.productId());
+            ProductSizeName sizeEnum = resolveSizeEnum(lineReq.size(), product);
+            String effectiveSize = sizeEnum != null ? sizeEnum.name() : null;
+            BigDecimal effectiveUnitPrice = resolveUnitPrice(product, sizeEnum, lineReq.unitPrice());
+            List<ResolvedTopping> toppings = resolveLineToppings(product.getId(), lineReq.toppingIds());
+            BigDecimal toppingTotal = toppings.stream()
+                    .map(ResolvedTopping::extraPrice)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal lineTotal = OrderPricingCalculator.calculateLineTotal(
+                    effectiveUnitPrice, toppingTotal, lineReq.quantity());
+            resolved.add(new ResolvedOrderLine(
+                    lineReq, product, effectiveSize, effectiveUnitPrice, toppings, toppingTotal, lineTotal));
         }
-        return total;
+        return resolved;
     }
 
-    /** Tính tổng phụ phí topping từ danh sách id — batch fetch, không ghi DB. */
-    private BigDecimal fetchToppingTotal(List<Integer> toppingIds) {
-        if (toppingIds == null || toppingIds.isEmpty()) {
-            return BigDecimal.ZERO;
+    /** Tính tổng tiền hàng từ các dòng đã kiểm tra & định giá theo DB (hoặc totalAmount fallback nếu không gửi lines). */
+    private static BigDecimal calculateTotalAmount(List<ResolvedOrderLine> resolvedLines,
+                                                   CreateOrderRequest request) {
+        if (resolvedLines.isEmpty()) {
+            return request.totalAmount() != null ? request.totalAmount() : BigDecimal.ZERO;
         }
-        List<Topping> toppings = toppingRepository.findAllByIdInAndStatus(toppingIds, RecordStatus.ACTIVE);
-        return toppings.stream()
-                .map(Topping::getDefaultPrice)
+        return resolvedLines.stream()
+                .map(ResolvedOrderLine::lineTotal)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
@@ -150,10 +200,16 @@ public class OrderServiceImpl implements OrderService {
                                Integer cashierId, BigDecimal totalAmount) {
         BigDecimal discountAmount = request.discountAmount() != null
                 ? request.discountAmount() : BigDecimal.ZERO;
+        Integer resolvedBranchId = branchId != null ? branchId : 1;
+        Integer resolvedShiftId = request.shiftId() != null
+                ? request.shiftId()
+                : shiftRepository.findFirstByBranchIdAndStatusOrderByOpenedAtDesc(resolvedBranchId, ShiftStatus.OPEN)
+                        .map(Shift::getId)
+                        .orElse(null);
 
         Order order = Order.builder()
-                .branchId(branchId != null ? branchId : 1)
-                .shiftId(request.shiftId())
+                .branchId(resolvedBranchId)
+                .shiftId(resolvedShiftId)
                 .cashierId(cashierId)
                 .status(OrderStatus.PENDING)
                 .totalAmount(totalAmount)
@@ -166,37 +222,17 @@ public class OrderServiceImpl implements OrderService {
         return orderRepository.save(order);
     }
 
-    /**
-     * Lưu toàn bộ order-line và topping của chúng.
-     * Mỗi line được xử lý bởi {@link #saveLineWithToppings}.
-     */
-    private List<OrderLineDto> saveAllLinesWithToppings(List<CreateOrderLineRequest> lineRequests,
-                                                        Integer orderId) {
-        List<OrderLineDto> result = new ArrayList<>();
-        for (CreateOrderLineRequest lineReq : lineRequests) {
-            result.add(saveLineWithToppings(lineReq, orderId));
+    private List<OrderLineDto> saveAllLinesWithToppings(List<ResolvedOrderLine> resolvedLines, Integer orderId) {
+        List<OrderLineDto> result = new ArrayList<>(resolvedLines.size());
+        for (ResolvedOrderLine line : resolvedLines) {
+            OrderLine savedLine = saveOrderLine(line, orderId);
+            List<OrderItemToppingDto> toppingDtos = saveToppingsForLine(line.toppings(), savedLine.getId());
+            result.add(orderMapper.toLineDto(savedLine, line.product().getName(), toppingDtos));
         }
         return result;
     }
 
-    /**
-     * Validate sản phẩm, lưu một OrderLine và tất cả topping của nó,
-     * rồi trả về DTO.
-     */
-    private OrderLineDto saveLineWithToppings(CreateOrderLineRequest lineReq, Integer orderId) {
-        Product product = requireAvailableProduct(lineReq.productId());
-
-        List<Topping> toppings = fetchActiveToppings(lineReq.toppingIds());
-        BigDecimal toppingTotal = sumToppingPrices(toppings);
-        BigDecimal lineTotal = OrderPricingCalculator.calculateLineTotal(lineReq.unitPrice(), toppingTotal, lineReq.quantity());
-
-        OrderLine savedLine = saveOrderLine(lineReq, product.getId(), orderId, toppingTotal, lineTotal);
-        List<OrderItemToppingDto> toppingDtos = saveToppingsForLine(toppings, savedLine.getId());
-
-        return orderMapper.toLineDto(savedLine, product.getName(), toppingDtos);
-    }
-
-    /** Tìm sản phẩm và kiểm tra trạng thái AVAILABLE — Fail Fast. */
+    /** Tìm sản phẩm, kiểm tra danh mục hoạt động và trạng thái AVAILABLE. */
     private Product requireAvailableProduct(Integer productId) {
         Product product = productRepository.findById(productId)
                 .orElseThrow(() -> new NotFoundException("sản phẩm"));
@@ -204,60 +240,107 @@ public class OrderServiceImpl implements OrderService {
             throw new BusinessRuleException(BusinessErrorCode.PRODUCT_UNAVAILABLE,
                     "Sản phẩm '" + product.getName() + "' hiện không khả dụng để đặt hàng.");
         }
+        if (product.getCategoryId() != null) {
+            Category category = categoryRepository.findById(product.getCategoryId()).orElse(null);
+            if (category == null || category.isSystemCategory() || category.getStatus() != RecordStatus.ACTIVE) {
+                throw new BusinessRuleException(BusinessErrorCode.PRODUCT_UNAVAILABLE,
+                        "Danh mục của sản phẩm '" + product.getName() + "' hiện ngừng phục vụ.");
+            }
+        }
         return product;
     }
 
-    /** Batch-fetch topping ACTIVE theo danh sách id. */
-    private List<Topping> fetchActiveToppings(List<Integer> toppingIds) {
+    private static ProductSizeName resolveSizeEnum(String rawSize, Product product) {
+        if (rawSize != null && !rawSize.isBlank()) {
+            try {
+                return ProductSizeName.valueOf(rawSize.trim().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ex) {
+                throw new InvalidFieldValueException("lines", "Size không hợp lệ: " + rawSize);
+            }
+        }
+        return product.getDefaultSize();
+    }
+
+    private BigDecimal resolveUnitPrice(Product product, ProductSizeName sizeEnum, BigDecimal fallbackPrice) {
+        List<ProductSize> configuredSizes = productSizeRepository.findAllByProductIdOrderBySizeAsc(product.getId());
+        if (configuredSizes.isEmpty()) {
+            return fallbackPrice;
+        }
+        if (sizeEnum == null) {
+            throw new InvalidFieldValueException("lines",
+                    "Vui lòng chọn size cho sản phẩm '" + product.getName() + "'.");
+        }
+        ProductSize matched = configuredSizes.stream()
+                .filter(ps -> ps.getSize() == sizeEnum)
+                .findFirst()
+                .orElseThrow(() -> new InvalidFieldValueException("lines",
+                        "Size " + sizeEnum + " không khả dụng cho sản phẩm '" + product.getName() + "'."));
+        return matched.getPrice();
+    }
+
+    private List<ResolvedTopping> resolveLineToppings(Integer productId, List<Integer> toppingIds) {
         if (toppingIds == null || toppingIds.isEmpty()) {
             return List.of();
         }
-        return toppingRepository.findAllByIdInAndStatus(toppingIds, RecordStatus.ACTIVE);
+        List<Integer> distinctIds = toppingIds.stream().filter(Objects::nonNull).distinct().toList();
+        Map<Integer, Topping> foundById = toppingRepository.findAllById(distinctIds).stream()
+                .collect(Collectors.toMap(Topping::getId, Function.identity()));
+        if (foundById.size() != distinctIds.size()) {
+            throw new InvalidFieldValueException("lines", "Có topping không tồn tại.");
+        }
+        Map<Integer, ProductTopping> customByToppingId = productToppingRepository.findAllByProductId(productId).stream()
+                .collect(Collectors.toMap(ProductTopping::getToppingId, Function.identity(), (a, b) -> a));
+
+        List<ResolvedTopping> result = new ArrayList<>(distinctIds.size());
+        for (Integer tid : distinctIds) {
+            Topping topping = foundById.get(tid);
+            if (topping.getStatus() != RecordStatus.ACTIVE) {
+                throw new BusinessRuleException(BusinessErrorCode.PRODUCT_UNAVAILABLE,
+                        "Topping '" + topping.getName() + "' hiện ngừng phục vụ.");
+            }
+            ProductTopping custom = customByToppingId.get(tid);
+            BigDecimal extraPrice = (custom != null && custom.getExtraPrice() != null)
+                    ? custom.getExtraPrice()
+                    : topping.getDefaultPrice();
+            result.add(new ResolvedTopping(topping, extraPrice != null ? extraPrice : BigDecimal.ZERO));
+        }
+        return result;
     }
 
-    /** Cộng tổng giá topping từ danh sách entity. */
-    private BigDecimal sumToppingPrices(List<Topping> toppings) {
-        return toppings.stream()
-                .map(Topping::getDefaultPrice)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-
-    /** Khởi tạo và lưu entity OrderLine. */
-    private OrderLine saveOrderLine(CreateOrderLineRequest lineReq, Integer productId,
-                                    Integer orderId, BigDecimal toppingTotal, BigDecimal lineTotal) {
+    private OrderLine saveOrderLine(ResolvedOrderLine resolvedLine, Integer orderId) {
+        CreateOrderLineRequest lineReq = resolvedLine.request();
         OrderLine line = OrderLine.builder()
                 .orderId(orderId)
-                .productId(productId)
+                .productId(resolvedLine.product().getId())
                 .quantity(lineReq.quantity())
-                .size(lineReq.size())
-                .unitPrice(lineReq.unitPrice())
-                .toppingTotal(toppingTotal)
+                .size(resolvedLine.effectiveSize())
+                .unitPrice(resolvedLine.effectiveUnitPrice())
+                .toppingTotal(resolvedLine.toppingTotal())
                 .sugarLevel(lineReq.sugarLevel())
                 .iceLevel(lineReq.iceLevel())
                 .note(lineReq.note())
-                .lineTotal(lineTotal)
+                .lineTotal(resolvedLine.lineTotal())
                 .build();
         return orderLineRepository.save(line);
     }
 
-    /** Lưu tất cả topping cho một order-line và trả về danh sách DTO. */
-    private List<OrderItemToppingDto> saveToppingsForLine(List<Topping> toppings, Integer orderLineId) {
-        List<OrderItemToppingDto> dtos = new ArrayList<>();
-        for (Topping topping : toppings) {
+    private List<OrderItemToppingDto> saveToppingsForLine(List<ResolvedTopping> toppings, Integer orderLineId) {
+        List<OrderItemToppingDto> dtos = new ArrayList<>(toppings.size());
+        for (ResolvedTopping resolved : toppings) {
             OrderItemTopping saved = orderItemToppingRepository.save(
                     OrderItemTopping.builder()
                             .orderLineId(orderLineId)
-                            .toppingId(topping.getId())
-                            .extraPrice(topping.getDefaultPrice())
+                            .toppingId(resolved.topping().getId())
+                            .extraPrice(resolved.extraPrice())
                             .build());
-            dtos.add(orderMapper.toToppingDto(saved, topping.getName()));
+            dtos.add(orderMapper.toToppingDto(saved, resolved.topping().getName()));
         }
         return dtos;
     }
 
     @Override
     @Transactional(readOnly = true)
-    public Page<OrderDto> listOrders(OrderListQuery query) {
+    public Page<OrderDto> listOrders(OrderListQuery query, UserPrincipal principal) {
         Integer branchId = BranchContext.resolveBranchScope(query.branchId());
 
         Sort.Direction direction = query.sortDir() == SortDirection.ASC
@@ -271,8 +354,20 @@ public class OrderServiceImpl implements OrderService {
         int pageSize = query.size() != null ? query.size() : 10;
         Pageable pageable = PageRequest.of(pageIndex, pageSize, Sort.by(direction, sortBy));
 
+        Integer scopedShiftId = null;
+        if (!isManagerOrCoo(principal)) {
+            Integer nonManagerBranchId = branchId != null ? branchId : BranchContext.requireBranchId();
+            Shift openShift = shiftRepository
+                    .findFirstByBranchIdAndStatusOrderByOpenedAtDesc(nonManagerBranchId, ShiftStatus.OPEN)
+                    .orElse(null);
+            if (openShift == null) {
+                return Page.empty(pageable);
+            }
+            scopedShiftId = openShift.getId();
+        }
+
         Page<Order> page = orderRepository.findAll(
-                OrderSpecs.filter(branchId, query.status(), query.fromDate(), query.toDate(), query.keyword()),
+                OrderSpecs.filter(branchId, scopedShiftId, query.status(), query.fromDate(), query.toDate(), query.keyword()),
                 pageable);
 
         return page.map(orderMapper::toDto);
@@ -280,19 +375,37 @@ public class OrderServiceImpl implements OrderService {
 
     @Override
     @Transactional(readOnly = true)
-    public OrderDetailDto getOrderById(Integer id) {
+    public OrderDetailDto getOrderById(Integer id, UserPrincipal principal) {
         Order order = orderRepository.findById(id)
                 .orElseThrow(() -> new NotFoundException("đơn hàng"));
 
-        BranchContext.resolveBranchScope(order.getBranchId());
+        Integer scopedBranchId = BranchContext.resolveBranchScope(order.getBranchId());
+        if (!isManagerOrCoo(principal)) {
+            Integer nonManagerBranchId = scopedBranchId != null ? scopedBranchId : order.getBranchId();
+            Shift openShift = shiftRepository
+                    .findFirstByBranchIdAndStatusOrderByOpenedAtDesc(nonManagerBranchId, ShiftStatus.OPEN)
+                    .orElse(null);
+            if (openShift == null || !Objects.equals(openShift.getId(), order.getShiftId())) {
+                throw new ForbiddenException(ErrorCode.ACCESS_DENIED,
+                        "Thu ngân chỉ được xem đơn hàng thuộc ca hiện tại đang mở.");
+            }
+        }
 
         return buildOrderDetailDto(order);
+    }
+
+    private static boolean isManagerOrCoo(UserPrincipal principal) {
+        if (principal == null) {
+            return true;
+        }
+        String role = principal.role();
+        return Roles.COO.code().equals(role) || Roles.BRANCH_MANAGER.code().equals(role);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public OrderDetailDto applyVoucher(Integer id, ApplyVoucherRequest request) {
-        Order order = orderRepository.findById(id)
+        Order order = orderRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new NotFoundException("đơn hàng"));
 
         BranchContext.resolveBranchScope(order.getBranchId());
@@ -307,7 +420,7 @@ public class OrderServiceImpl implements OrderService {
                     "Đơn hàng đã được áp dụng một voucher khác trước đó.");
         }
 
-        Voucher voucher = voucherRepository.findByCode(request.code().trim().toUpperCase())
+        Voucher voucher = voucherRepository.findByCodeForUpdate(request.code().trim().toUpperCase(Locale.ROOT))
                 .orElseThrow(() -> new NotFoundException("voucher"));
 
         if (!VoucherEligibilityPolicy.isActive(voucher.getStatus())) {
@@ -330,6 +443,8 @@ public class OrderServiceImpl implements OrderService {
             throw new BusinessRuleException(BusinessErrorCode.VOUCHER_MIN_NOT_MET,
                     "Đơn hàng chưa đạt giá trị tối thiểu " + voucher.getMinOrderAmount() + " để áp dụng voucher.");
         }
+
+        validateVoucherScope(voucher.getId(), order.getId());
 
         BigDecimal discount = VoucherDiscountCalculator.calculateDiscount(
                 voucher.getDiscountType(), voucher.getDiscountValue(), order.getTotalAmount());
@@ -355,10 +470,37 @@ public class OrderServiceImpl implements OrderService {
         return buildOrderDetailDto(updatedOrder);
     }
 
+    private void validateVoucherScope(Integer voucherId, Integer orderId) {
+        List<Integer> allowedProductIds = voucherProductRepository.findAllByVoucherId(voucherId).stream()
+                .map(VoucherProduct::getProductId)
+                .toList();
+        List<Integer> allowedCategoryIds = voucherCategoryRepository.findAllByVoucherId(voucherId).stream()
+                .map(VoucherCategory::getCategoryId)
+                .toList();
+        if (allowedProductIds.isEmpty() && allowedCategoryIds.isEmpty()) {
+            return;
+        }
+        List<OrderLine> lines = orderLineRepository.findByOrderId(orderId);
+        Set<Integer> orderProductIds = lines.stream()
+                .map(OrderLine::getProductId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        Set<Integer> orderCategoryIds = orderProductIds.isEmpty()
+                ? Set.of()
+                : productRepository.findAllById(orderProductIds).stream()
+                        .map(Product::getCategoryId)
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toSet());
+        if (!VoucherEligibilityPolicy.isScopeEligible(
+                allowedProductIds, allowedCategoryIds, orderProductIds, orderCategoryIds)) {
+            throw new BusinessRuleException(BusinessErrorCode.VOUCHER_SCOPE_NOT_MET);
+        }
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public OrderDetailDto removeVoucher(Integer id) {
-        Order order = orderRepository.findById(id)
+        Order order = orderRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new NotFoundException("đơn hàng"));
 
         BranchContext.resolveBranchScope(order.getBranchId());
@@ -369,7 +511,7 @@ public class OrderServiceImpl implements OrderService {
         }
 
         orderVoucherRepository.findByOrderId(order.getId()).ifPresent(ov -> {
-            voucherRepository.findById(ov.getVoucherId()).ifPresent(v -> {
+            voucherRepository.findByIdForUpdate(ov.getVoucherId()).ifPresent(v -> {
                 if (v.getUsedCount() > 0) {
                     v.setUsedCount(v.getUsedCount() - 1);
                     voucherRepository.save(v);
@@ -390,7 +532,7 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public OrderDto cancelOrder(Integer id, CancelOrderRequest request, UserPrincipal principal) {
-        Order order = orderRepository.findById(id)
+        Order order = orderRepository.findByIdForUpdate(id)
                 .orElseThrow(() -> new NotFoundException("đơn hàng"));
 
         BranchContext.resolveBranchScope(order.getBranchId());
@@ -423,7 +565,7 @@ public class OrderServiceImpl implements OrderService {
 
         // Gỡ lượt dùng voucher nếu có
         orderVoucherRepository.findByOrderId(order.getId()).ifPresent(ov -> {
-            voucherRepository.findById(ov.getVoucherId()).ifPresent(v -> {
+            voucherRepository.findByIdForUpdate(ov.getVoucherId()).ifPresent(v -> {
                 if (v.getUsedCount() > 0) {
                     v.setUsedCount(v.getUsedCount() - 1);
                     voucherRepository.save(v);

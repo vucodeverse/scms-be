@@ -2,12 +2,20 @@ package edu.fpt.sba.scms.controller;
 
 import edu.fpt.sba.scms.common.enums.BranchStatus;
 import edu.fpt.sba.scms.common.enums.Roles;
+import edu.fpt.sba.scms.common.enums.ShiftStatus;
+import edu.fpt.sba.scms.common.enums.ShiftType;
 import edu.fpt.sba.scms.common.enums.UserStatus;
+import edu.fpt.sba.scms.common.util.DateTimeUtil;
 import edu.fpt.sba.scms.model.Branch;
 import edu.fpt.sba.scms.model.Role;
+import edu.fpt.sba.scms.model.Shift;
+import edu.fpt.sba.scms.model.ShiftAssignment;
+import edu.fpt.sba.scms.model.ShiftAssignmentId;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.BranchRepository;
 import edu.fpt.sba.scms.repository.RoleRepository;
+import edu.fpt.sba.scms.repository.ShiftAssignmentRepository;
+import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
 import edu.fpt.sba.scms.service.support.PinHasher;
 import org.junit.jupiter.api.Test;
@@ -21,12 +29,14 @@ import org.springframework.test.web.servlet.MvcResult;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
+import java.time.Instant;
 import java.time.LocalTime;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.not;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
@@ -257,7 +267,49 @@ class AuthFlowIT {
                 .status(UserStatus.ACTIVE)
                 .build());
 
-        // 1. Public list cashiers chỉ trả 2 Cashier ACTIVE của chi nhánh
+        // 0. Chưa có ca ĐANG MỞ và chưa đến ca ĐÃ LÊN LỊCH -> danh sách rỗng & không được mở khóa PIN
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + branch.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(0)));
+
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"2468"}
+                                """.formatted(branch.getId(), cashierOk.getId())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        // Lên lịch ca đang trong khung mở ca [now - 30p, now + 4h] với 2 Thu ngân + 1 Pha chế
+        Instant now = Instant.now();
+        Shift scheduledShift = shiftRepository.save(Shift.builder()
+                .branchId(branch.getId())
+                .shiftDate(DateTimeUtil.todayVN())
+                .shiftType(ShiftType.MORNING)
+                .plannedStart(now.minusSeconds(1800))
+                .plannedEnd(now.plusSeconds(14400))
+                .status(ShiftStatus.SCHEDULED)
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(scheduledShift.getId(), cashierOk.getId()))
+                .shift(scheduledShift)
+                .employee(cashierOk)
+                .roleInShift("CASHIER")
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(scheduledShift.getId(), cashierLockTarget.getId()))
+                .shift(scheduledShift)
+                .employee(cashierLockTarget)
+                .roleInShift("CASHIER")
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(scheduledShift.getId(), barista.getId()))
+                .shift(scheduledShift)
+                .employee(barista)
+                .roleInShift("BARISTA")
+                .build());
+
+        // 1. Public list cashiers chỉ trả 2 Cashier được xếp lịch trong ca đang đến giờ
         mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + branch.getId()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data", hasSize(2)))
@@ -331,6 +383,337 @@ class AuthFlowIT {
                                 """.formatted(branch.getId(), cashierLockTarget.getId())))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.code").value("PIN_LOCKED"));
+    }
+
+    @Autowired
+    private edu.fpt.sba.scms.repository.ShiftRepository shiftRepository;
+
+    @Autowired
+    private edu.fpt.sba.scms.repository.ShiftAssignmentRepository shiftAssignmentRepository;
+
+    @Test
+    void temporaryCashierRoleInShiftIsListedAndCanPinLogin() throws Exception {
+        Branch branch = branchRepository.save(Branch.builder()
+                .code("BR_TEMP")
+                .name("Chi nhánh Gán Role Tạm")
+                .status(BranchStatus.OPEN)
+                .build());
+
+        Role baristaRole = roleRepository.findByCode("BARISTA").orElseThrow();
+        User barista = userRepository.save(User.builder()
+                .branchId(branch.getId())
+                .roleId(baristaRole.getId())
+                .fullName("Pha chế kiêm Thu ngân")
+                .pinHash(pinHasher.hash("5555"))
+                .pinLookupHash(pinHasher.lookupHash(branch.getId(), "5555"))
+                .position(Roles.BARISTA)
+                .status(UserStatus.ACTIVE)
+                .build());
+
+        // Tạo ca làm việc và gán Barista làm Thu ngân trong ca này (role_in_shift = CASHIER)
+        Instant now = Instant.now();
+        edu.fpt.sba.scms.model.Shift shift = shiftRepository.save(edu.fpt.sba.scms.model.Shift.builder()
+                .branchId(branch.getId())
+                .shiftDate(edu.fpt.sba.scms.common.util.DateTimeUtil.todayVN())
+                .shiftType(edu.fpt.sba.scms.common.enums.ShiftType.MORNING)
+                .plannedStart(now.minusSeconds(1800))
+                .plannedEnd(now.plusSeconds(18000))
+                .status(edu.fpt.sba.scms.common.enums.ShiftStatus.OPEN)
+                .openedAt(now.minusSeconds(1800))
+                .build());
+
+        shiftAssignmentRepository.save(edu.fpt.sba.scms.model.ShiftAssignment.builder()
+                .id(new edu.fpt.sba.scms.model.ShiftAssignmentId(shift.getId(), barista.getId()))
+                .shift(shift)
+                .employee(barista)
+                .roleInShift("CASHIER")
+                .build());
+
+        // 1. Kiểm tra /auth/cashiers trả về nhân viên Barista được gán role tạm CASHIER trong ca này
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + branch.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].employeeId", hasItem(barista.getId())))
+                .andExpect(jsonPath("$.data[*].fullName", hasItem("Pha chế kiêm Thu ngân")));
+
+        // 2. Barista đăng nhập bằng mã PIN 5555 thành công với vai trò CASHIER
+        MvcResult res = mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"5555"}
+                                """.formatted(branch.getId(), barista.getId())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.user.role").value("CASHIER"))
+                .andReturn();
+
+        JsonNode json = objectMapper.readTree(res.getResponse().getContentAsString());
+        String token = json.at("/data/accessToken").asText();
+
+        // 3. /auth/me nhận diện quyền Thu ngân trong phiên này
+        mockMvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.role").value("CASHIER"))
+                .andExpect(jsonPath("$.data.permissions", hasItem("SHIFT_OPEN")));
+    }
+
+    @Test
+    void pinCashierEligibilityRespectsShiftWindowMultiShiftAndHandoverRelief() throws Exception {
+        int seq = SEQ.incrementAndGet();
+        Branch branch = branchRepository.save(Branch.builder()
+                .code("BR_WIN_" + seq)
+                .name("Chi nhánh Gate Giờ Ca " + seq)
+                .status(BranchStatus.OPEN)
+                .build());
+
+        Role cashierRole = roleRepository.findByCode(Roles.CASHIER.code()).orElseThrow();
+        Role baristaRole = roleRepository.findByCode(Roles.BARISTA.code()).orElseThrow();
+        Role waiterRole = roleRepository.findByCode(Roles.WAITER.code())
+                .orElseGet(() -> roleRepository.save(Role.builder().code(Roles.WAITER.code()).name("Phục vụ").build()));
+
+        User scheduledCashier = userRepository.save(User.builder()
+                .branchId(branch.getId())
+                .roleId(cashierRole.getId())
+                .fullName("Nguyễn Hải")
+                .pinHash(pinHasher.hash("1122"))
+                .pinLookupHash(pinHasher.lookupHash(branch.getId(), "1122"))
+                .position(Roles.CASHIER)
+                .status(UserStatus.ACTIVE)
+                .build());
+        User unscheduledCashier = userRepository.save(User.builder()
+                .branchId(branch.getId())
+                .roleId(cashierRole.getId())
+                .fullName("Thu ngân Ngoài Ca")
+                .pinHash(pinHasher.hash("3344"))
+                .pinLookupHash(pinHasher.lookupHash(branch.getId(), "3344"))
+                .position(Roles.CASHIER)
+                .status(UserStatus.ACTIVE)
+                .build());
+        User tempBaristaCashier = userRepository.save(User.builder()
+                .branchId(branch.getId())
+                .roleId(baristaRole.getId())
+                .fullName("Nguyễn Ánh")
+                .pinHash(pinHasher.hash("7788"))
+                .pinLookupHash(pinHasher.lookupHash(branch.getId(), "7788"))
+                .position(Roles.BARISTA)
+                .status(UserStatus.ACTIVE)
+                .build());
+        User waiterAssignedAsWaiter = userRepository.save(User.builder()
+                .branchId(branch.getId())
+                .roleId(waiterRole.getId())
+                .fullName("Phục vụ Đúng Vai Trò")
+                .pinHash(pinHasher.hash("4455"))
+                .pinLookupHash(pinHasher.lookupHash(branch.getId(), "4455"))
+                .position(Roles.WAITER)
+                .status(UserStatus.ACTIVE)
+                .build());
+        User unassignedWaiter = userRepository.save(User.builder()
+                .branchId(branch.getId())
+                .roleId(waiterRole.getId())
+                .fullName("Phục vụ Chưa Xếp Ca")
+                .pinHash(pinHasher.hash("6677"))
+                .pinLookupHash(pinHasher.lookupHash(branch.getId(), "6677"))
+                .position(Roles.WAITER)
+                .status(UserStatus.ACTIVE)
+                .build());
+
+        Instant now = Instant.now();
+
+        // 1. Ca sắp tới nhưng còn quá sớm (+90 phút > giới hạn 60 phút) -> KHÔNG hiện danh sách & bị chặn 403
+        Shift futureShift = shiftRepository.save(Shift.builder()
+                .branchId(branch.getId())
+                .shiftDate(DateTimeUtil.todayVN())
+                .shiftType(ShiftType.EVENING)
+                .plannedStart(now.plusSeconds(5400))
+                .plannedEnd(now.plusSeconds(19800))
+                .status(ShiftStatus.SCHEDULED)
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(futureShift.getId(), scheduledCashier.getId()))
+                .shift(futureShift)
+                .employee(scheduledCashier)
+                .roleInShift("CASHIER")
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(futureShift.getId(), tempBaristaCashier.getId()))
+                .shift(futureShift)
+                .employee(tempBaristaCashier)
+                .roleInShift("CASHIER")
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(futureShift.getId(), unscheduledCashier.getId()))
+                .shift(futureShift)
+                .employee(unscheduledCashier)
+                .roleInShift("CASHIER")
+                .build());
+
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + branch.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(0)));
+
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"1122"}
+                                """.formatted(branch.getId(), scheduledCashier.getId())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        // 2. Chi nhánh có 2 Phục vụ nhưng ca SCHEDULED đến giờ chỉ gán 1 Phục vụ kiêm CASHIER (+ 1 Thu ngân gán BARISTA)
+        // -> chỉ hiển thị đúng 1 người được gán vai trò CASHIER trong ca đó.
+        Shift singleWaiterShift = shiftRepository.save(Shift.builder()
+                .branchId(branch.getId())
+                .shiftDate(DateTimeUtil.todayVN())
+                .shiftType(ShiftType.NIGHT)
+                .plannedStart(now.minusSeconds(900))
+                .plannedEnd(now.plusSeconds(3600))
+                .status(ShiftStatus.SCHEDULED)
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(singleWaiterShift.getId(), waiterAssignedAsWaiter.getId()))
+                .shift(singleWaiterShift)
+                .employee(waiterAssignedAsWaiter)
+                .roleInShift("CASHIER")
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(singleWaiterShift.getId(), unscheduledCashier.getId()))
+                .shift(singleWaiterShift)
+                .employee(unscheduledCashier)
+                .roleInShift("BARISTA")
+                .build());
+
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + branch.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(1)))
+                .andExpect(jsonPath("$.data[0].employeeId").value(waiterAssignedAsWaiter.getId()));
+
+        // Đóng singleWaiterShift để chuyển sang kiểm thử ca đang OPEN
+        singleWaiterShift.setStatus(ShiftStatus.CLOSED);
+        singleWaiterShift.setClosedAt(now);
+        shiftRepository.save(singleWaiterShift);
+
+        // 3. Ca sáng đang OPEN + CHƯA bàn giao két (handoverPending = false, activeCashierId = scheduledCashier):
+        // Dù Ca sáng cũng gán Nguyễn Ánh làm CASHIER và Ca chiều (futureShift) đã vào khung +30p với unscheduledCashier,
+        // màn PIN chỉ hiển thị DUY NHẤT người đang giữ két (scheduledCashier), chặn 403 mọi người khác chưa tới lượt.
+        Shift morningOpenShift = shiftRepository.save(Shift.builder()
+                .branchId(branch.getId())
+                .shiftDate(DateTimeUtil.todayVN())
+                .shiftType(ShiftType.MORNING)
+                .plannedStart(now.minusSeconds(3600))
+                .plannedEnd(now.plusSeconds(1800))
+                .status(ShiftStatus.OPEN)
+                .openedAt(now.minusSeconds(3600))
+                .activeCashierId(scheduledCashier.getId())
+                .handoverPending(false)
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(morningOpenShift.getId(), scheduledCashier.getId()))
+                .shift(morningOpenShift)
+                .employee(scheduledCashier)
+                .roleInShift("CASHIER")
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(morningOpenShift.getId(), tempBaristaCashier.getId()))
+                .shift(morningOpenShift)
+                .employee(tempBaristaCashier)
+                .roleInShift("CASHIER")
+                .build());
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(morningOpenShift.getId(), waiterAssignedAsWaiter.getId()))
+                .shift(morningOpenShift)
+                .employee(waiterAssignedAsWaiter)
+                .roleInShift("WAITER")
+                .build());
+
+        futureShift.setPlannedStart(now.plusSeconds(1800));
+        futureShift = shiftRepository.save(futureShift);
+
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + branch.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(1)))
+                .andExpect(jsonPath("$.data[0].employeeId").value(scheduledCashier.getId()));
+
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"7788"}
+                                """.formatted(branch.getId(), tempBaristaCashier.getId())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"3344"}
+                                """.formatted(branch.getId(), unscheduledCashier.getId())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        // Người đang giữ két vẫn đăng nhập PIN bình thường
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"1122"}
+                                """.formatted(branch.getId(), scheduledCashier.getId())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.user.role").value("CASHIER"));
+
+        // 4. Khi Ca sáng chuyển sang chờ bàn giao két (handoverPending = true):
+        // Chỉ hiển thị đúng người trong Ca sáng có vai trò CASHIER (scheduledCashier + tempBaristaCashier);
+        // KHÔNG lộ unscheduledCashier (kể cả gốc CASHIER hay được xếp ở futureShift),
+        // KHÔNG lộ waiterAssignedAsWaiter (gán WAITER) hay unassignedWaiter.
+        morningOpenShift.setHandoverPending(true);
+        morningOpenShift = shiftRepository.save(morningOpenShift);
+
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + branch.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(2)))
+                .andExpect(jsonPath("$.data[*].employeeId", hasItem(scheduledCashier.getId())))
+                .andExpect(jsonPath("$.data[*].employeeId", hasItem(tempBaristaCashier.getId())))
+                .andExpect(jsonPath("$.data[*].employeeId", not(hasItem(unscheduledCashier.getId()))))
+                .andExpect(jsonPath("$.data[*].employeeId", not(hasItem(waiterAssignedAsWaiter.getId()))))
+                .andExpect(jsonPath("$.data[*].employeeId", not(hasItem(unassignedWaiter.getId()))));
+
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"7788"}
+                                """.formatted(branch.getId(), tempBaristaCashier.getId())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.user.role").value("CASHIER"));
+
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"3344"}
+                                """.formatted(branch.getId(), unscheduledCashier.getId())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"branchId":%d,"employeeId":%d,"pin":"4455"}
+                                """.formatted(branch.getId(), waiterAssignedAsWaiter.getId())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        // 5. Khi Ca sáng CLOSED và Ca chiều đang trong khung giờ mở ca (+30p <= 60p) -> hiện đúng 3 người được gán CASHIER của Ca chiều;
+        // sau khi Ca chiều cũng quá hạn (> 30p sau giờ kết thúc) -> danh sách trống hoàn toàn.
+        morningOpenShift.setStatus(ShiftStatus.CLOSED);
+        morningOpenShift.setClosedAt(now);
+        shiftRepository.save(morningOpenShift);
+
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + branch.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(3)))
+                .andExpect(jsonPath("$.data[*].employeeId", hasItem(unscheduledCashier.getId())));
+
+        futureShift.setPlannedStart(now.minusSeconds(18000));
+        futureShift.setPlannedEnd(now.minusSeconds(3600));
+        shiftRepository.save(futureShift);
+
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + branch.getId()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(0)));
     }
 
     @Test

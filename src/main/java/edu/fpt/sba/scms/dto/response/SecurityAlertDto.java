@@ -4,7 +4,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
 
-@Schema(name = "SecurityAlertDto", description = "Chi tiết một cảnh báo bảo mật (khóa tạm PIN Kiosk)")
+@Schema(name = "SecurityAlertDto", description = "Chi tiết cảnh báo bảo mật hoặc yêu cầu phê duyệt ca tại chi nhánh")
 public record SecurityAlertDto(
         Integer id,
         Integer branchId,
@@ -25,6 +25,7 @@ public record SecurityAlertDto(
         String resolvedByName,
         Instant resolvedAt,
         String resolveNote,
-        Instant createdAt
+        Instant createdAt,
+        Integer referenceShiftId
 ) {
 }

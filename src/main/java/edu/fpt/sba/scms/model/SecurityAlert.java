@@ -75,6 +75,9 @@ public class SecurityAlert {
     @Column(name = "locked_until")
     private Instant lockedUntil;
 
+    @Column(name = "reference_shift_id")
+    private Integer referenceShiftId;
+
     @Column(name = "title", nullable = false, length = 200)
     private String title;
 

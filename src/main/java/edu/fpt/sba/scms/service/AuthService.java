@@ -5,6 +5,7 @@ import edu.fpt.sba.scms.dto.request.PinLoginRequest;
 import edu.fpt.sba.scms.dto.request.RefreshRequest;
 import edu.fpt.sba.scms.dto.response.CashierPinOptionDto;
 import edu.fpt.sba.scms.dto.response.CurrentUserResponse;
+import edu.fpt.sba.scms.dto.response.KioskBranchDto;
 import edu.fpt.sba.scms.dto.response.LoginResponse;
 import edu.fpt.sba.scms.dto.response.TokenResponse;
 import edu.fpt.sba.scms.security.principal.UserPrincipal;
@@ -19,6 +20,9 @@ public interface AuthService {
      *                 tài khoản người khác); không dùng để xác thực.
      */
     LoginResponse login(LoginRequest request, String clientIp);
+
+    /** Danh sách chi nhánh mở/tạm đóng cho màn hình chọn chi nhánh Kiosk / mở khóa PIN. */
+    List<KioskBranchDto> listPublicBranches(String keyword);
 
     /** Danh sách Thu ngân đang hoạt động của chi nhánh để mở khóa bằng PIN tại POS / Kiểm két. */
     List<CashierPinOptionDto> listCashierPinOptions(Integer branchId);

@@ -64,7 +64,7 @@ public class ProductController {
             description = "Mặc định 10 phần tử/trang; lọc keyword/categoryId/status; sortBy: name|basePrice|createdAt.")
     @ApiResponse(responseCode = "200", description = "OK")
     @GetMapping
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("isAuthenticated()")
     public PageResponse<ProductDto> list(@ModelAttribute @Valid ProductListQuery query) {
         return PageResponse.of(productService.list(query));
     }
@@ -129,7 +129,7 @@ public class ProductController {
     @Operation(summary = "Danh sách giá size của sản phẩm")
     @ApiResponse(responseCode = "200", description = "OK")
     @GetMapping("/{id}/sizes")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("isAuthenticated()")
     public List<ProductSizeDto> sizes(@PathVariable Integer id) {
         return productSizeService.list(id);
     }
@@ -175,7 +175,7 @@ public class ProductController {
     @ApiResponse(responseCode = "200", description = "OK",
             content = @Content(schema = @Schema(implementation = ProductRecipeResponse.class)))
     @GetMapping("/{id}/recipe")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("isAuthenticated()")
     public ProductRecipeResponse recipe(@PathVariable Integer id,
                                         @ModelAttribute @Valid RecipeProductQuery query) {
         return recipeService.getRecipe(id, query.size());
@@ -192,7 +192,7 @@ public class ProductController {
                     content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
     })
     @PutMapping("/{id}/recipe")
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAuthority('COO')")
     public ProductRecipeResponse saveRecipe(@PathVariable Integer id,
                                             @RequestBody @Valid SaveProductRecipeRequest request,
                                             @AuthenticationPrincipal UserPrincipal principal) {
@@ -208,7 +208,7 @@ public class ProductController {
     })
     @DeleteMapping("/{id}/recipe")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    @PreAuthorize("permitAll()")
+    @PreAuthorize("hasAuthority('COO')")
     public void deleteRecipe(@PathVariable Integer id,
                              @RequestParam(required = false) ProductSizeName size,
                              @AuthenticationPrincipal UserPrincipal principal) {

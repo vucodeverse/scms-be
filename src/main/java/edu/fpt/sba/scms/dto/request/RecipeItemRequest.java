@@ -1,7 +1,9 @@
 package edu.fpt.sba.scms.dto.request;
 
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotNull;
 
 import java.math.BigDecimal;
@@ -17,8 +19,9 @@ public record RecipeItemRequest(
 
         @NotNull(message = "Định lượng không được để trống")
         @DecimalMin(value = "0.0001", message = "Định lượng phải lớn hơn 0")
+        @DecimalMax(value = "1000000", message = "Định lượng quá lớn")
+        @Digits(integer = 15, fraction = 4, message = "Định lượng tối đa 4 chữ số thập phân")
         @Schema(description = "Định lượng theo đơn vị cơ sở", example = "18.0000")
         BigDecimal quantityBase
 ) {
 }
-

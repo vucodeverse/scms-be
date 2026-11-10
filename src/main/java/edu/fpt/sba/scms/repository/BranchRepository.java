@@ -16,6 +16,18 @@ public interface BranchRepository extends JpaRepository<Branch, Integer>, JpaSpe
 
     boolean existsByCode(String code);
 
+    boolean existsByNameIgnoreCase(String name);
+
+    boolean existsByNameIgnoreCaseAndIdNot(String name, Integer id);
+
+    boolean existsByPhone(String phone);
+
+    boolean existsByPhoneAndIdNot(String phone, Integer id);
+
+    boolean existsByEmailIgnoreCase(String email);
+
+    boolean existsByEmailIgnoreCaseAndIdNot(String email, Integer id);
+
     /** Khoá bản ghi chi nhánh khi gán/đổi/gỡ quản lý để giữ ràng buộc 1 chi nhánh - 1 quản lý chính. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select b from Branch b where b.id = :id")

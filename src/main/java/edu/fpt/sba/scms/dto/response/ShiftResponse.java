@@ -39,6 +39,14 @@ public record ShiftResponse(
         Integer activeCashierId,
         String activeCashierName,
         boolean handoverPending,
-        ShiftHandoverResponse pendingHandover
+        ShiftHandoverResponse pendingHandover,
+        boolean earlyClosePending,
+        Integer earlyCloseRequestedBy,
+        String earlyCloseRequestedByName,
+        Instant earlyCloseRequestedAt,
+        BigDecimal earlyCloseCountedCash,
+        BigDecimal earlyCloseVariance,
+        String earlyCloseDiscrepancyReason,
+        String earlyCloseReason
 ) {
 }

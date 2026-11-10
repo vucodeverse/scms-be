@@ -42,5 +42,9 @@ public class ShiftAssignment {
 
     @Column(name = "role_in_shift", length = 50)
     private String roleInShift;
+
+    @Column(name = "is_replacement", nullable = false)
+    @Builder.Default
+    private Boolean isReplacement = false;
 }
 

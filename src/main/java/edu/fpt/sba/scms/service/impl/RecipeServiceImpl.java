@@ -3,6 +3,7 @@ package edu.fpt.sba.scms.service.impl;
 import edu.fpt.sba.scms.common.audit.AuditLogService;
 import edu.fpt.sba.scms.common.enums.AuditAction;
 import edu.fpt.sba.scms.common.enums.ProductSizeName;
+import edu.fpt.sba.scms.common.enums.ProductStatus;
 import edu.fpt.sba.scms.common.exception.InvalidFieldValueException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
 import edu.fpt.sba.scms.domain.recipe.RecipeCostCalculator;
@@ -30,6 +31,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Hiện thực nghiệp vụ quản lý công thức định lượng (BOM) và giá vốn món (UC12).
@@ -70,7 +72,11 @@ public class RecipeServiceImpl implements RecipeService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ProductRecipeResponse saveRecipe(Integer productId, SaveProductRecipeRequest request, UserPrincipal actor) {
-        Product product = requireProduct(productId);
+        Product product = requireProductForUpdate(productId);
+        if (product.getStatus() == ProductStatus.INACTIVE) {
+            throw new InvalidFieldValueException("productId",
+                    "Sản phẩm đã ngừng kinh doanh (INACTIVE), không thể cập nhật công thức.");
+        }
         ProductSizeName size = request.size();
         if (size != null) {
             validateProductHasSize(productId, size);
@@ -78,6 +84,7 @@ public class RecipeServiceImpl implements RecipeService {
 
         List<RecipeItemRequest> items = request.items() != null ? request.items() : List.of();
         validateRecipeItems(items);
+        validateNoCrossScopeOverlap(productId, size, items);
 
         List<Recipe> beforeRecipes = size == null
                 ? recipeRepository.findByProductIdAndSizeIsNullOrderByIngredientIdAsc(productId)
@@ -116,7 +123,7 @@ public class RecipeServiceImpl implements RecipeService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void deleteRecipe(Integer productId, ProductSizeName size, UserPrincipal actor) {
-        requireProduct(productId);
+        requireProductForUpdate(productId);
 
         if (size == null) {
             recipeRepository.deleteByProductId(productId);
@@ -135,10 +142,49 @@ public class RecipeServiceImpl implements RecipeService {
                 .orElseThrow(() -> new NotFoundException("Sản phẩm"));
     }
 
+    private Product requireProductForUpdate(Integer productId) {
+        return productRepository.findByIdForUpdate(productId)
+                .orElseThrow(() -> new NotFoundException("Sản phẩm"));
+    }
+
     private void validateProductHasSize(Integer productId, ProductSizeName size) {
         boolean sizeExists = productSizeRepository.findByProductIdAndSize(productId, size).isPresent();
         if (!sizeExists) {
             throw new InvalidFieldValueException("size", "Size " + size + " chưa được cấu hình cho sản phẩm.");
+        }
+    }
+
+    private void validateNoCrossScopeOverlap(Integer productId, ProductSizeName size, List<RecipeItemRequest> items) {
+        if (items.isEmpty()) {
+            return;
+        }
+        if (size == null) {
+            Set<Integer> sizeSpecificIngredientIds = recipeRepository.findByProductIdOrderBySizeAscIngredientIdAsc(productId)
+                    .stream()
+                    .filter(r -> r.getSize() != null)
+                    .map(Recipe::getIngredientId)
+                    .collect(Collectors.toSet());
+            List<Integer> overlapping = items.stream()
+                    .map(RecipeItemRequest::ingredientId)
+                    .filter(sizeSpecificIngredientIds::contains)
+                    .toList();
+            if (!overlapping.isEmpty()) {
+                throw new InvalidFieldValueException("items",
+                        "Nguyên liệu đã tồn tại trong công thức riêng theo size, không thể trùng ở công thức chung: " + overlapping);
+            }
+        } else {
+            Set<Integer> commonIngredientIds = recipeRepository.findByProductIdAndSizeIsNullOrderByIngredientIdAsc(productId)
+                    .stream()
+                    .map(Recipe::getIngredientId)
+                    .collect(Collectors.toSet());
+            List<Integer> overlapping = items.stream()
+                    .map(RecipeItemRequest::ingredientId)
+                    .filter(commonIngredientIds::contains)
+                    .toList();
+            if (!overlapping.isEmpty()) {
+                throw new InvalidFieldValueException("items",
+                        "Nguyên liệu đã tồn tại trong công thức chung, không thể trùng ở công thức size " + size + ": " + overlapping);
+            }
         }
     }
 
@@ -202,4 +248,3 @@ public class RecipeServiceImpl implements RecipeService {
                 .toList();
     }
 }
-

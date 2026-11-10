@@ -13,6 +13,7 @@ import edu.fpt.sba.scms.model.Product;
 import edu.fpt.sba.scms.model.ProductSize;
 import edu.fpt.sba.scms.repository.ProductRepository;
 import edu.fpt.sba.scms.repository.ProductSizeRepository;
+import edu.fpt.sba.scms.repository.RecipeRepository;
 import edu.fpt.sba.scms.service.ProductSizeService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +33,7 @@ public class ProductSizeServiceImpl implements ProductSizeService {
 
     private final ProductRepository productRepository;
     private final ProductSizeRepository productSizeRepository;
+    private final RecipeRepository recipeRepository;
     private final ProductMapper productMapper;
     private final AuditLogService auditLogService;
 
@@ -73,6 +75,7 @@ public class ProductSizeServiceImpl implements ProductSizeService {
             throw new BusinessRuleException(BusinessErrorCode.DEFAULT_SIZE_IN_USE,
                     "Không xoá size mặc định của sản phẩm. Đổi size mặc định trước.");
         }
+        recipeRepository.deleteByProductIdAndSize(productId, size);
         productSizeRepository.delete(productSize);
         auditLogService.log(AuditAction.PRICE_UPDATE, ENTITY, productSize.getId(), Map.of("size", size.name()), null);
     }

@@ -20,6 +20,7 @@ public record ShiftScheduleResponse(
         ShiftStatus status,
         List<Integer> assignedEmployeeIds,
         int totalEmployees,
-        Map<Integer, String> employeeRoles
+        Map<Integer, String> employeeRoles,
+        List<Integer> replacementEmployeeIds
 ) {
 }

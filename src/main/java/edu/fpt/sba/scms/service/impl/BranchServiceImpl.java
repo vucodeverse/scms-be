@@ -6,6 +6,7 @@ import edu.fpt.sba.scms.common.enums.BranchStatus;
 import edu.fpt.sba.scms.common.enums.BusinessErrorCode;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
 import edu.fpt.sba.scms.common.enums.Roles;
+import edu.fpt.sba.scms.common.enums.ShiftStatus;
 import edu.fpt.sba.scms.common.enums.UserStatus;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
 import edu.fpt.sba.scms.common.exception.ConflictException;
@@ -25,6 +26,7 @@ import edu.fpt.sba.scms.model.Branch;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.BranchRepository;
 import edu.fpt.sba.scms.repository.BranchSpecs;
+import edu.fpt.sba.scms.repository.ShiftRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
 import edu.fpt.sba.scms.service.BranchService;
 import edu.fpt.sba.scms.service.support.MasterDataQueries;
@@ -40,6 +42,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalTime;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 
@@ -60,6 +63,7 @@ public class BranchServiceImpl implements BranchService {
 
     private final BranchRepository branchRepository;
     private final UserRepository userRepository;
+    private final ShiftRepository shiftRepository;
     private final BranchMapper branchMapper;
     private final UserMapper userMapper;
     private final RefreshTokenStore refreshTokenStore;
@@ -90,15 +94,34 @@ public class BranchServiceImpl implements BranchService {
     @Transactional(rollbackFor = Exception.class)
     public BranchDto create(CreateBranchRequest request) {
         ensureTimesValid(request.openingTime(), request.closingTime());
-        if (branchRepository.existsByCode(request.code())) {
+        String code = MasterDataText.requireText(request.code());
+        String name = MasterDataText.requireText(request.name());
+        String phone = MasterDataText.trimToNull(request.phone());
+        String email = lowerOrNull(request.email());
+
+        if (branchRepository.existsByCode(code)) {
             throw new ConflictException(ErrorCode.DUPLICATE_CODE);
         }
+        if (branchRepository.existsByNameIgnoreCase(name)) {
+            throw new ConflictException(ErrorCode.DUPLICATE_NAME);
+        }
+        if (phone != null && branchRepository.existsByPhone(phone)) {
+            throw new ConflictException(ErrorCode.DUPLICATE_PHONE);
+        }
+        if (email != null && branchRepository.existsByEmailIgnoreCase(email)) {
+            throw new ConflictException(ErrorCode.DUPLICATE_EMAIL);
+        }
+        if (request.status() == BranchStatus.INACTIVE && request.managerUserId() != null) {
+            throw new InvalidFieldValueException("managerUserId",
+                    "Không thể gắn quản lý cho chi nhánh đã ngừng hoạt động.");
+        }
+
         Branch branch = Branch.builder()
-                .code(request.code())
-                .name(MasterDataText.trimToNull(request.name()))
+                .code(code)
+                .name(name)
                 .address(MasterDataText.trimToNull(request.address()))
-                .phone(MasterDataText.trimToNull(request.phone()))
-                .email(MasterDataText.trimToNull(request.email()))
+                .phone(phone)
+                .email(email)
                 .taxCode(MasterDataText.trimToNull(request.taxCode()))
                 .openingTime(request.openingTime())
                 .closingTime(request.closingTime())
@@ -122,20 +145,36 @@ public class BranchServiceImpl implements BranchService {
     public BranchDto update(Integer id, SaveBranchRequest request) {
         Branch branch = lock(id);
         ensureTimesValid(request.openingTime(), request.closingTime());
+
+        String name = MasterDataText.requireText(request.name());
+        String phone = MasterDataText.trimToNull(request.phone());
+        String email = lowerOrNull(request.email());
+        if (branchRepository.existsByNameIgnoreCaseAndIdNot(name, id)) {
+            throw new ConflictException(ErrorCode.DUPLICATE_NAME);
+        }
+        if (phone != null && branchRepository.existsByPhoneAndIdNot(phone, id)) {
+            throw new ConflictException(ErrorCode.DUPLICATE_PHONE);
+        }
+        if (email != null && branchRepository.existsByEmailIgnoreCaseAndIdNot(email, id)) {
+            throw new ConflictException(ErrorCode.DUPLICATE_EMAIL);
+        }
+
+        boolean leavingOpen = request.status() != BranchStatus.OPEN && request.status() != branch.getStatus();
+        if (leavingOpen) {
+            ensureNoOpenShift(branch.getId());
+            ensureNoActiveStaff(branch);
+        }
+
         // code read-only (đặc tả §10.3): không nhận từ body dù client có gửi.
         Object before = snapshot(branch);
-        branch.setName(MasterDataText.trimToNull(request.name()));
+        branch.setName(name);
         branch.setAddress(MasterDataText.trimToNull(request.address()));
-        branch.setPhone(MasterDataText.trimToNull(request.phone()));
-        branch.setEmail(MasterDataText.trimToNull(request.email()));
+        branch.setPhone(phone);
+        branch.setEmail(email);
         branch.setTaxCode(MasterDataText.trimToNull(request.taxCode()));
         branch.setOpeningTime(request.openingTime());
         branch.setClosingTime(request.closingTime());
         branch.setTableCount(request.tableCount());
-        boolean closing = request.status() != BranchStatus.OPEN && branch.getStatus() == BranchStatus.OPEN;
-        if (closing) {
-            ensureNoActiveStaff(branch);
-        }
         boolean becomingInactive = request.status() == BranchStatus.INACTIVE
                 && branch.getStatus() != BranchStatus.INACTIVE;
         branch.setStatus(request.status());
@@ -165,7 +204,9 @@ public class BranchServiceImpl implements BranchService {
     public BranchDto changeStatus(Integer id, SaveBranchStatusRequest request) {
         Branch branch = lock(id);
         Object before = snapshot(branch);
-        if (request.status() != BranchStatus.OPEN && branch.getStatus() == BranchStatus.OPEN) {
+        boolean leavingOpen = request.status() != BranchStatus.OPEN && request.status() != branch.getStatus();
+        if (leavingOpen) {
+            ensureNoOpenShift(branch.getId());
             ensureNoActiveStaff(branch);
         }
         boolean becomingInactive = request.status() == BranchStatus.INACTIVE
@@ -185,6 +226,7 @@ public class BranchServiceImpl implements BranchService {
     public BranchDto softDelete(Integer id) {
         Branch branch = lock(id);
         Object before = snapshot(branch);
+        ensureNoOpenShift(branch.getId());
         ensureNoActiveStaff(branch);
         branch.setStatus(BranchStatus.INACTIVE);
         applyManagerAssignment(branch, null);
@@ -270,6 +312,13 @@ public class BranchServiceImpl implements BranchService {
         return !toDetach.isEmpty();
     }
 
+    private void ensureNoOpenShift(Integer branchId) {
+        if (shiftRepository.existsByBranchIdAndStatus(branchId, ShiftStatus.OPEN)) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_ALREADY_OPEN,
+                    "Chi nhánh đang có ca làm việc đang mở, vui lòng đóng ca trước khi tạm đóng hoặc ngừng hoạt động.");
+        }
+    }
+
     /**
      * Ngừng/inactive bị chặn khi còn nhân sự ACTIVE — tránh chi nhánh "mồ côi" mà người vẫn đăng nhập.
      * Ngoại lệ: chỉ còn đúng một Branch Manager ACTIVE (quản lý của chính chi nhánh).
@@ -288,6 +337,11 @@ public class BranchServiceImpl implements BranchService {
             throw new InvalidFieldValueException("closingTime",
                     "Giờ đóng cửa phải sau giờ mở cửa (không hỗ trợ ca qua đêm).");
         }
+    }
+
+    private static String lowerOrNull(String email) {
+        String trimmed = MasterDataText.trimToNull(email);
+        return trimmed == null ? null : trimmed.toLowerCase(Locale.ROOT);
     }
 
     private Branch get(Integer id) {

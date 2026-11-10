@@ -119,6 +119,27 @@ public class Shift {
     @Column(name = "handover_pending")
     private Boolean handoverPending;
 
+    @Column(name = "early_close_pending")
+    private Boolean earlyClosePending;
+
+    @Column(name = "early_close_requested_by")
+    private Integer earlyCloseRequestedBy;
+
+    @Column(name = "early_close_requested_at")
+    private Instant earlyCloseRequestedAt;
+
+    @Column(name = "early_close_counted_cash", precision = 19, scale = 2)
+    private BigDecimal earlyCloseCountedCash;
+
+    @Column(name = "early_close_variance", precision = 19, scale = 2)
+    private BigDecimal earlyCloseVariance;
+
+    @Column(name = "early_close_discrepancy_reason", length = 500)
+    private String earlyCloseDiscrepancyReason;
+
+    @Column(name = "early_close_reason", length = 500)
+    private String earlyCloseReason;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     private ShiftStatus status;
@@ -154,6 +175,9 @@ public class Shift {
         if (handoverPending == null) {
             handoverPending = Boolean.FALSE;
         }
+        if (earlyClosePending == null) {
+            earlyClosePending = Boolean.FALSE;
+        }
     }
 
     @PreUpdate
@@ -167,5 +191,9 @@ public class Shift {
 
     public boolean isHandoverPending() {
         return Boolean.TRUE.equals(handoverPending);
+    }
+
+    public boolean isEarlyClosePending() {
+        return Boolean.TRUE.equals(earlyClosePending);
     }
 }

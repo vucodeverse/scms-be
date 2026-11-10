@@ -3,16 +3,22 @@ package edu.fpt.sba.scms.controller;
 import edu.fpt.sba.scms.common.enums.AttendanceStatus;
 import edu.fpt.sba.scms.common.enums.BranchStatus;
 import edu.fpt.sba.scms.common.enums.Roles;
+import edu.fpt.sba.scms.common.enums.SecurityAlertStatus;
+import edu.fpt.sba.scms.common.enums.SecurityAlertType;
 import edu.fpt.sba.scms.common.enums.ShiftHandoverStatus;
 import edu.fpt.sba.scms.common.enums.ShiftStatus;
 import edu.fpt.sba.scms.common.enums.UserStatus;
+import edu.fpt.sba.scms.common.util.DateTimeUtil;
 import edu.fpt.sba.scms.model.Branch;
 import edu.fpt.sba.scms.model.Role;
+import edu.fpt.sba.scms.model.Shift;
+import edu.fpt.sba.scms.model.ShiftAssignment;
 import edu.fpt.sba.scms.model.ShiftAssignmentId;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.AttendanceRepository;
 import edu.fpt.sba.scms.repository.BranchRepository;
 import edu.fpt.sba.scms.repository.RoleRepository;
+import edu.fpt.sba.scms.repository.SecurityAlertRepository;
 import edu.fpt.sba.scms.repository.ShiftAssignmentRepository;
 import edu.fpt.sba.scms.repository.ShiftHandoverRepository;
 import edu.fpt.sba.scms.repository.ShiftRepository;
@@ -85,6 +91,9 @@ public class ShiftFlowIT {
     private AttendanceRepository attendanceRepository;
 
     @Autowired
+    private SecurityAlertRepository securityAlertRepository;
+
+    @Autowired
     private PasswordEncoder passwordEncoder;
 
     @Autowired
@@ -99,6 +108,34 @@ public class ShiftFlowIT {
     private Integer cashierId;
     private static final String MANAGER_PIN = "654321";
     private static final String CASHIER_PIN = "2468";
+
+    private int scheduleCashierForCurrentWindow(Integer branchId, Integer employeeId) {
+        Instant now = Instant.now();
+        ZoneId vn = DateTimeUtil.VN;
+        ShiftType inferred = ShiftSchedulePolicy.inferShiftType(LocalTime.now(vn));
+        Shift shift = shiftRepository.save(Shift.builder()
+                .branchId(branchId)
+                .shiftDate(LocalDate.now(vn))
+                .shiftType(inferred)
+                .plannedStart(now.minusSeconds(1800))
+                .plannedEnd(now.plusSeconds(14400))
+                .status(ShiftStatus.SCHEDULED)
+                .build());
+        User emp = userRepository.findById(employeeId).orElseThrow();
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(shift.getId(), employeeId))
+                .shift(shift)
+                .employee(emp)
+                .roleInShift("CASHIER")
+                .build());
+        return shift.getId();
+    }
+
+    private void moveShiftIntoOnTimeCloseWindow(Integer shiftId) {
+        Shift s = shiftRepository.findById(shiftId).orElseThrow();
+        s.setPlannedEnd(Instant.now().plusSeconds(300));
+        shiftRepository.save(s);
+    }
 
     @BeforeEach
     void setUp() throws Exception {
@@ -328,6 +365,8 @@ public class ShiftFlowIT {
     @Test
     @DisplayName("Kiểm két Thu ngân (PIN), đối soát kết ca cũ, phân quyền nạp/rút BM & COO và đa chi nhánh COO")
     void testCashierHandoverPermissionsAndMultiBranchCooView() throws Exception {
+        int sched1Id = scheduleCashierForCurrentWindow(testBranchId, cashierId);
+
         // 1. Thu ngân mở khóa bằng PIN (tài khoản không có username/password)
         MvcResult pinLoginRes = mockMvc.perform(post("/api/v1/auth/pin-login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -350,10 +389,11 @@ public class ShiftFlowIT {
                         .content("""
                                 {
                                     "branchId": %d,
+                                    "scheduledShiftId": %d,
                                     "openingCash": 1000000,
                                     "note": "Thu ngân mở ca sáng"
                                 }
-                                """.formatted(testBranchId)))
+                                """.formatted(testBranchId, sched1Id)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.openedBy").value(cashierId))
                 .andExpect(jsonPath("$.data.branchName").exists())
@@ -435,7 +475,8 @@ public class ShiftFlowIT {
                 .andExpect(jsonPath("$.data.currentCashBalance").value(1320000))
                 .andExpect(jsonPath("$.data.transactions", hasSize(3)));
 
-        // 6. Thu ngân đóng Ca #1 khớp 1.320.000 đ
+        // 6. Thu ngân đóng Ca #1 khớp 1.320.000 đ (trong ngưỡng 10 phút cuối ca)
+        moveShiftIntoOnTimeCloseWindow(shift1Id);
         mockMvc.perform(post("/api/v1/shifts/" + shift1Id + "/close")
                         .header("Authorization", "Bearer " + cashierToken)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -477,6 +518,7 @@ public class ShiftFlowIT {
         int shift2Id = com.jayway.jsonpath.JsonPath.read(shift2Res.getResponse().getContentAsString(), "$.data.id");
 
         // Đóng Ca #2 với 1.290.000 đ, mở Ca #3 khớp hoàn toàn 1.290.000 đ (không cần note)
+        moveShiftIntoOnTimeCloseWindow(shift2Id);
         mockMvc.perform(post("/api/v1/shifts/" + shift2Id + "/close")
                         .header("Authorization", "Bearer " + cashierToken)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -537,18 +579,23 @@ public class ShiftFlowIT {
     }
 
     @Test
-    @DisplayName("UC08: Tạo, cập nhật, kiểm tra trùng lịch và xóa lịch phân ca nhân viên")
+    @DisplayName("UC08: Tạo, cập nhật, kiểm tra trùng lịch, ràng buộc khung giờ từng ca và xóa lịch phân ca nhân viên")
     void testScheduleShiftFlow() throws Exception {
+        ZoneId vn = ZoneId.of("Asia/Ho_Chi_Minh");
+        LocalDate targetDate = LocalDate.now(vn).plusDays(10);
+        Instant mornStart = targetDate.atTime(7, 0).atZone(vn).toInstant();
+        Instant mornEnd = targetDate.atTime(12, 30).atZone(vn).toInstant();
+
         String schedulePayload = """
                 {
                     "branchId": %d,
-                    "shiftDate": "2026-11-20",
+                    "shiftDate": "%s",
                     "shiftType": "MORNING",
-                    "plannedStart": "2026-11-20T00:00:00Z",
-                    "plannedEnd": "2026-11-20T07:00:00Z",
+                    "plannedStart": "%s",
+                    "plannedEnd": "%s",
                     "assignedEmployeeIds": [%d]
                 }
-                """.formatted(testBranchId, managerId);
+                """.formatted(testBranchId, targetDate, mornStart, mornEnd, managerId);
 
         MvcResult createRes = mockMvc.perform(post("/api/v1/shifts/schedules")
                         .header("Authorization", "Bearer " + cooToken)
@@ -561,16 +608,18 @@ public class ShiftFlowIT {
         int shiftId1 = com.jayway.jsonpath.JsonPath.read(createRes.getResponse().getContentAsString(), "$.data.shiftId");
 
         // Tạo ca trùng khung giờ với managerId -> Bị chặn theo BR-15 (SCHEDULE_CONFLICT)
+        Instant overlapStart = targetDate.atTime(8, 0).atZone(vn).toInstant();
+        Instant overlapEnd = targetDate.atTime(12, 0).atZone(vn).toInstant();
         String conflictPayload = """
                 {
                     "branchId": %d,
-                    "shiftDate": "2026-11-20",
-                    "shiftType": "EVENING",
-                    "plannedStart": "2026-11-20T05:00:00Z",
-                    "plannedEnd": "2026-11-20T12:00:00Z",
+                    "shiftDate": "%s",
+                    "shiftType": "MORNING",
+                    "plannedStart": "%s",
+                    "plannedEnd": "%s",
                     "assignedEmployeeIds": [%d]
                 }
-                """.formatted(testBranchId, managerId);
+                """.formatted(testBranchId, targetDate, overlapStart, overlapEnd, managerId);
         mockMvc.perform(post("/api/v1/shifts/schedules")
                         .header("Authorization", "Bearer " + cooToken)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -578,16 +627,18 @@ public class ShiftFlowIT {
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.detailCode").value("SCHEDULE_CONFLICT"));
 
-        // Cập nhật phân công ca: giữ managerId và gán thêm staffId (không tự xung đột với chính nó)
+        // Cập nhật phân công ca trong khung Ca sáng (07:30-12:00): giữ managerId và gán thêm staffId
+        Instant updStart = targetDate.atTime(7, 30).atZone(vn).toInstant();
+        Instant updEnd = targetDate.atTime(12, 0).atZone(vn).toInstant();
         String updatePayload = """
                 {
-                    "shiftDate": "2026-11-20",
+                    "shiftDate": "%s",
                     "shiftType": "MORNING",
-                    "plannedStart": "2026-11-20T00:30:00Z",
-                    "plannedEnd": "2026-11-20T07:30:00Z",
+                    "plannedStart": "%s",
+                    "plannedEnd": "%s",
                     "assignedEmployeeIds": [%d, %d]
                 }
-                """.formatted(managerId, staffId);
+                """.formatted(targetDate, updStart, updEnd, managerId, staffId);
         mockMvc.perform(put("/api/v1/shifts/schedules/" + shiftId1)
                         .header("Authorization", "Bearer " + cooToken)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -598,13 +649,13 @@ public class ShiftFlowIT {
         // Đổi sang chỉ còn staffId
         String updateOnlyStaffPayload = """
                 {
-                    "shiftDate": "2026-11-20",
+                    "shiftDate": "%s",
                     "shiftType": "MORNING",
-                    "plannedStart": "2026-11-20T00:30:00Z",
-                    "plannedEnd": "2026-11-20T07:30:00Z",
+                    "plannedStart": "%s",
+                    "plannedEnd": "%s",
                     "assignedEmployeeIds": [%d]
                 }
-                """.formatted(staffId);
+                """.formatted(targetDate, updStart, updEnd, staffId);
         mockMvc.perform(put("/api/v1/shifts/schedules/" + shiftId1)
                         .header("Authorization", "Bearer " + cooToken)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -613,18 +664,90 @@ public class ShiftFlowIT {
                 .andExpect(jsonPath("$.data.totalEmployees").value(1))
                 .andExpect(jsonPath("$.data.assignedEmployeeIds[0]").value(staffId));
 
+        // Chặn tạo Ca tối qua ngày hôm sau (22:00 -> 21:00+1d) & ngoài khung (17:30-22:00) -> 422 INVALID_SHIFT_TIME
+        mockMvc.perform(post("/api/v1/shifts/schedules")
+                        .header("Authorization", "Bearer " + cooToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "branchId": %d,
+                                    "shiftDate": "%s",
+                                    "shiftType": "NIGHT",
+                                    "plannedStart": "%s",
+                                    "plannedEnd": "%s",
+                                    "assignedEmployeeIds": [%d]
+                                }
+                                """.formatted(
+                                        testBranchId,
+                                        targetDate,
+                                        targetDate.atTime(22, 0).atZone(vn).toInstant(),
+                                        targetDate.plusDays(1).atTime(21, 0).atZone(vn).toInstant(),
+                                        cashierId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("INVALID_SHIFT_TIME"));
+
+        mockMvc.perform(post("/api/v1/shifts/schedules")
+                        .header("Authorization", "Bearer " + cooToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "branchId": %d,
+                                    "shiftDate": "%s",
+                                    "shiftType": "NIGHT",
+                                    "plannedStart": "%s",
+                                    "plannedEnd": "%s",
+                                    "assignedEmployeeIds": [%d]
+                                }
+                                """.formatted(
+                                        testBranchId,
+                                        targetDate,
+                                        targetDate.atTime(17, 30).atZone(vn).toInstant(),
+                                        targetDate.atTime(22, 0).atZone(vn).toInstant(),
+                                        cashierId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("INVALID_SHIFT_TIME"));
+
+        // Cho phép Ca tối 20:00-22:00 (nằm gọn trong 18:00-23:00 cùng ngày)
+        MvcResult nightCustomRes = mockMvc.perform(post("/api/v1/shifts/schedules")
+                        .header("Authorization", "Bearer " + cooToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "branchId": %d,
+                                    "shiftDate": "%s",
+                                    "shiftType": "NIGHT",
+                                    "plannedStart": "%s",
+                                    "plannedEnd": "%s",
+                                    "assignedEmployeeIds": [%d]
+                                }
+                                """.formatted(
+                                        testBranchId,
+                                        targetDate,
+                                        targetDate.atTime(20, 0).atZone(vn).toInstant(),
+                                        targetDate.atTime(22, 0).atZone(vn).toInstant(),
+                                        cashierId)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.shiftType").value("NIGHT"))
+                .andReturn();
+        int nightCustomId = com.jayway.jsonpath.JsonPath.read(nightCustomRes.getResponse().getContentAsString(), "$.data.shiftId");
+
         // Tra cứu lịch ca trong khoảng ngày
-        mockMvc.perform(get("/api/v1/shifts/schedules?branchId=" + testBranchId + "&startDate=2026-11-19&endDate=2026-11-21")
+        mockMvc.perform(get("/api/v1/shifts/schedules?branchId=" + testBranchId
+                        + "&startDate=" + targetDate.minusDays(1) + "&endDate=" + targetDate.plusDays(1))
                         .header("Authorization", "Bearer " + cooToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data", hasSize(1)));
+                .andExpect(jsonPath("$.data", hasSize(2)));
 
         // Xóa ca SCHEDULED
+        mockMvc.perform(delete("/api/v1/shifts/schedules/" + nightCustomId)
+                        .header("Authorization", "Bearer " + cooToken))
+                .andExpect(status().isOk());
         mockMvc.perform(delete("/api/v1/shifts/schedules/" + shiftId1)
                         .header("Authorization", "Bearer " + cooToken))
                 .andExpect(status().isOk());
 
-        mockMvc.perform(get("/api/v1/shifts/schedules?branchId=" + testBranchId + "&startDate=2026-11-19&endDate=2026-11-21")
+        mockMvc.perform(get("/api/v1/shifts/schedules?branchId=" + testBranchId
+                        + "&startDate=" + targetDate.minusDays(1) + "&endDate=" + targetDate.plusDays(1))
                         .header("Authorization", "Bearer " + cooToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data", hasSize(0)));
@@ -847,6 +970,8 @@ public class ShiftFlowIT {
     @Test
     @DisplayName("Thu ngân kiểm két mở ca tự động Check-in và nhập PIN khi đóng ca để tự động Check-out")
     void testCashierOpenShiftAutoCheckInAndPinCloseAutoCheckOut() throws Exception {
+        int schedId = scheduleCashierForCurrentWindow(testBranchId, cashierId);
+
         // 1. Thu ngân mở khóa bằng PIN
         MvcResult pinLoginRes = mockMvc.perform(post("/api/v1/auth/pin-login")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -863,8 +988,8 @@ public class ShiftFlowIT {
         MvcResult openRes = mockMvc.perform(post("/api/v1/shifts/open")
                         .header("Authorization", "Bearer " + cashierToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"branchId\":%d,\"openingCash\":1000000,\"note\":\"Thu ngân kiểm két mở ca\"}"
-                                .formatted(testBranchId)))
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":1000000,\"note\":\"Thu ngân kiểm két mở ca\"}"
+                                .formatted(testBranchId, schedId)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.status").value("OPEN"))
                 .andReturn();
@@ -879,6 +1004,7 @@ public class ShiftFlowIT {
         assertEquals(AttendanceStatus.CHECKED_IN, openAttendance.getStatus());
 
         // 3. Nhập sai PIN khi đóng ca -> 401 INVALID_PIN, ca vẫn OPEN & vẫn CHECKED_IN
+        moveShiftIntoOnTimeCloseWindow(shiftId);
         mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
                         .header("Authorization", "Bearer " + cashierToken)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -909,6 +1035,8 @@ public class ShiftFlowIT {
     @Test
     @DisplayName("Phân quyền xem lịch & đối soát: CASHIER chỉ thấy ca đóng gần nhất và không xem được lịch phân ca; BM/COO xem toàn bộ")
     void testRoleScopeVisibilityForCashierManagerAndCoo() throws Exception {
+        int sched1Id = scheduleCashierForCurrentWindow(testBranchId, cashierId);
+
         MvcResult pinLoginRes = mockMvc.perform(post("/api/v1/auth/pin-login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"branchId\":%d,\"employeeId\":%d,\"pin\":\"%s\"}"
@@ -924,7 +1052,8 @@ public class ShiftFlowIT {
         MvcResult open1 = mockMvc.perform(post("/api/v1/shifts/open")
                         .header("Authorization", "Bearer " + bmToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"branchId\":%d,\"openingCash\":1000000}".formatted(testBranchId)))
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":1000000}"
+                                .formatted(testBranchId, sched1Id)))
                 .andExpect(status().isCreated())
                 .andReturn();
         int shift1Id = com.jayway.jsonpath.JsonPath.read(open1.getResponse().getContentAsString(), "$.data.id");
@@ -1081,6 +1210,7 @@ public class ShiftFlowIT {
         Integer cashier2Id = userRepository.save(cashier2).getId();
 
         // 1. Thu ngân A mở khóa bằng PIN & mở ca (tiền đầu ca = 1.000.000)
+        int currentSchedId = scheduleCashierForCurrentWindow(testBranchId, cashierId);
         MvcResult pinLoginA = mockMvc.perform(post("/api/v1/auth/pin-login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"branchId\":%d,\"employeeId\":%d,\"pin\":\"%s\"}"
@@ -1092,7 +1222,8 @@ public class ShiftFlowIT {
         MvcResult openRes = mockMvc.perform(post("/api/v1/shifts/open")
                         .header("Authorization", "Bearer " + cashierAToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"branchId\":%d,\"openingCash\":1000000}".formatted(testBranchId)))
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":1000000}"
+                                .formatted(testBranchId, currentSchedId)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.activeCashierId").value(cashierId))
                 .andExpect(jsonPath("$.data.handoverPending").value(false))
@@ -1278,6 +1409,7 @@ public class ShiftFlowIT {
                 .andExpect(status().isOk());
 
         // Tổng kết cuối ca: expectedCash = 1.000.000 + 50.000 + 35.000 = 1.085.000
+        moveShiftIntoOnTimeCloseWindow(shiftId);
         mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
                         .header("Authorization", "Bearer " + cashierBToken)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -1308,6 +1440,7 @@ public class ShiftFlowIT {
     @DisplayName("Hủy bàn giao, Quản lý đứng quầy thay khi thiếu Thu ngân, đóng hẳn ca và kiêm nhiệm vai trò theo từng ca (roleInShift)")
     void testHandoverCancelManagerStandInAndPerShiftRole() throws Exception {
         // 1. Thu ngân mở khóa & mở ca
+        int currentSchedId = scheduleCashierForCurrentWindow(testBranchId, cashierId);
         MvcResult pinLoginA = mockMvc.perform(post("/api/v1/auth/pin-login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"branchId\":%d,\"employeeId\":%d,\"pin\":\"%s\"}"
@@ -1319,7 +1452,8 @@ public class ShiftFlowIT {
         MvcResult openRes = mockMvc.perform(post("/api/v1/shifts/open")
                         .header("Authorization", "Bearer " + cashierAToken)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"branchId\":%d,\"openingCash\":1000000}".formatted(testBranchId)))
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":1000000}"
+                                .formatted(testBranchId, currentSchedId)))
                 .andExpect(status().isCreated())
                 .andReturn();
         int shiftId = com.jayway.jsonpath.JsonPath.read(openRes.getResponse().getContentAsString(), "$.data.id");
@@ -1359,6 +1493,9 @@ public class ShiftFlowIT {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.handoverPending").value(false))
                 .andExpect(jsonPath("$.data.activeCashierId").value(managerId));
+
+        assertTrue(attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(managerId).isEmpty(),
+                "Quản lý chi nhánh nhận két đứng quầy thay không bị tạo bản ghi chấm công PIN mở");
 
         // Quản lý tạo & thu tiền mặt đơn POS bình thường sau khi nhận két
         MvcResult bmOrder = mockMvc.perform(post("/api/v1/orders")
@@ -1465,5 +1602,578 @@ public class ShiftFlowIT {
         var updatedAssignment = shiftAssignmentRepository.findById(new ShiftAssignmentId(schedId, waiterId)).orElseThrow();
         assertEquals("CASHIER", updatedAssignment.getRoleInShift());
         assertFalse(shiftRepository.findById(schedId).orElseThrow().isHandoverPending());
+    }
+
+    @Test
+    @DisplayName("Hồi quy: Giữ Thu ngân gốc trong /auth/cashiers, phân biệt isReplacement bàn giao có lịch vs phát sinh, và lọc Kiosk theo ca")
+    void testHandoverReplacementAndKioskFilterPreservesPermanentCashiers() throws Exception {
+        Role waiterRole = roleRepository.findByCode(Roles.WAITER.code())
+                .orElseGet(() -> roleRepository.save(Role.builder().code(Roles.WAITER.code()).name("Phục vụ").build()));
+        String waiterPin = "7788";
+        Integer waiterId = userRepository.save(User.builder()
+                .branchId(testBranchId)
+                .roleId(waiterRole.getId())
+                .role(waiterRole)
+                .fullName("Phục vụ Có Lịch")
+                .pinHash(pinHasher.hash(waiterPin))
+                .pinLookupHash(pinHasher.lookupHash(testBranchId, waiterPin))
+                .position(Roles.WAITER)
+                .status(UserStatus.ACTIVE)
+                .build()).getId();
+
+        ZoneId vn = ZoneId.of("Asia/Ho_Chi_Minh");
+        LocalDate todayVN = LocalDate.now(vn);
+        Instant morningStart = todayVN.atTime(7, 0).atZone(vn).toInstant();
+        Instant morningEnd = todayVN.atTime(12, 30).atZone(vn).toInstant();
+        MvcResult schedRes = mockMvc.perform(post("/api/v1/shifts/schedules")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "branchId": %d,
+                                    "shiftDate": "%s",
+                                    "shiftType": "MORNING",
+                                    "plannedStart": "%s",
+                                    "plannedEnd": "%s",
+                                    "assignedEmployeeIds": [%d, %d]
+                                }
+                                """.formatted(testBranchId, todayVN, morningStart, morningEnd, cashierId, waiterId)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        int shiftId = com.jayway.jsonpath.JsonPath.read(schedRes.getResponse().getContentAsString(), "$.data.shiftId");
+        Shift activeWindowShift = shiftRepository.findById(shiftId).orElseThrow();
+        Instant nowWindow = Instant.now();
+        activeWindowShift.setPlannedStart(nowWindow.minusSeconds(1800));
+        activeWindowShift.setPlannedEnd(nowWindow.plusSeconds(14400));
+        shiftRepository.save(activeWindowShift);
+
+        // Mở ca bằng PIN Thu ngân
+        MvcResult pinLoginCashier = mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"employeeId\":%d,\"pin\":\"%s\"}".formatted(testBranchId, cashierId, CASHIER_PIN)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String cashierToken = com.jayway.jsonpath.JsonPath.read(pinLoginCashier.getResponse().getContentAsString(), "$.data.accessToken");
+
+        mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"openingCash\":1000000,\"scheduledShiftId\":%d}".formatted(testBranchId, shiftId)))
+                .andExpect(status().isCreated());
+
+        // Kiosk POS lọc theo ca + excludeCashier chỉ trả waiterId (bỏ cashierId và Barista chưa gán lịch)
+        mockMvc.perform(get("/api/v1/attendance/kiosk/employees?branchId=%d&shiftId=%d&onlyAssigned=true&excludeCashier=true"
+                        .formatted(testBranchId, shiftId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(1)))
+                .andExpect(jsonPath("$.data[0].employeeId").value(waiterId));
+
+        // Bàn giao #1 cho waiterId (ĐÃ có lịch trong ca): nâng roleInShift=CASHIER nhưng giữ isReplacement=false
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/handover/initiate")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":1000000,\"reason\":\"Thu ngân bận\",\"expectedIncomingUserId\":%d,\"pin\":\"%s\"}"
+                                .formatted(waiterId, CASHIER_PIN)))
+                .andExpect(status().isOk());
+
+        // /auth/cashiers vừa giữ cashierId gốc vừa bổ sung người được chỉ định nhận két waiterId
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + testBranchId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].employeeId", hasItem(cashierId)))
+                .andExpect(jsonPath("$.data[*].employeeId", hasItem(waiterId)));
+
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/handover/accept")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":1000000,\"incomingUserId\":%d,\"pin\":\"%s\"}".formatted(waiterId, waiterPin)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.activeCashierId").value(waiterId));
+
+        var waiterAssignment = shiftAssignmentRepository.findById(new ShiftAssignmentId(shiftId, waiterId)).orElseThrow();
+        assertEquals("CASHIER", waiterAssignment.getRoleInShift());
+        assertFalse(Boolean.TRUE.equals(waiterAssignment.getIsReplacement()),
+                "Nhân sự đã có lịch trong ca nhận bàn giao không bị đánh dấu nhầm là nhân sự thay thế phát sinh");
+
+        // Waiter mở khóa PIN để bàn giao KHÔNG cần chọn trước expectedIncomingUserId -> BM chỉ định staffId nhận két thay
+        MvcResult pinLoginWaiter = mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"employeeId\":%d,\"pin\":\"%s\"}".formatted(testBranchId, waiterId, waiterPin)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String waiterToken = com.jayway.jsonpath.JsonPath.read(pinLoginWaiter.getResponse().getContentAsString(), "$.data.accessToken");
+
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/handover/initiate")
+                        .header("Authorization", "Bearer " + waiterToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":1000000,\"reason\":\"Gọi Pha chế đứng thay\",\"pin\":\"%s\"}"
+                                .formatted(waiterPin)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/handover/accept")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":1000000,\"incomingUserId\":%d,\"pin\":\"1112\"}".formatted(staffId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.activeCashierId").value(staffId));
+
+        var replacementAssignment = shiftAssignmentRepository.findById(new ShiftAssignmentId(shiftId, staffId)).orElseThrow();
+        assertEquals("CASHIER", replacementAssignment.getRoleInShift());
+        assertTrue(Boolean.TRUE.equals(replacementAssignment.getIsReplacement()),
+                "Nhân sự không có lịch ca nhận bàn giao phải được đánh dấu isReplacement=true");
+
+        // Đóng ca khi KHÔNG còn ca OPEN hay ca SCHEDULED nào đến giờ -> /auth/cashiers rỗng & pin-login bị chặn 403
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":1000000}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + testBranchId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(0)));
+
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"employeeId\":%d,\"pin\":\"%s\"}".formatted(testBranchId, cashierId, CASHIER_PIN)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        // Khi ca kế tiếp được xếp lịch đến khung mở ca có gán cashierId -> cashierId hiển thị lại, vẫn ẩn staffId
+        scheduleCashierForCurrentWindow(testBranchId, cashierId);
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + testBranchId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].employeeId", hasItem(cashierId)))
+                .andExpect(jsonPath("$.data[*].employeeId", org.hamcrest.Matchers.not(hasItem(staffId))));
+    }
+
+    @Test
+    @DisplayName("Chặn tạo/sửa lịch ở ngày đã qua và chặn kiểm két mở ca quá hạn hoặc chưa đến giờ (trước > 60 phút)")
+    void testPastScheduleBlockedAndOpenShiftTimeWindowEnforced() throws Exception {
+        ZoneId vn = ZoneId.of("Asia/Ho_Chi_Minh");
+        LocalDate todayVN = LocalDate.now(vn);
+        LocalDate yesterdayVN = todayVN.minusDays(1);
+        LocalDate tomorrowVN = todayVN.plusDays(1);
+
+        // 1. Tạo lịch cho ngày đã qua -> 422 INVALID_SHIFT_TIME
+        Instant pastStart = yesterdayVN.atTime(7, 0).atZone(vn).toInstant();
+        Instant pastEnd = yesterdayVN.atTime(12, 30).atZone(vn).toInstant();
+        mockMvc.perform(post("/api/v1/shifts/schedules")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "branchId": %d,
+                                    "shiftDate": "%s",
+                                    "shiftType": "MORNING",
+                                    "plannedStart": "%s",
+                                    "plannedEnd": "%s",
+                                    "assignedEmployeeIds": [%d]
+                                }
+                                """.formatted(testBranchId, yesterdayVN, pastStart, pastEnd, staffId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("INVALID_SHIFT_TIME"));
+
+        // 2. Lịch SCHEDULED quá hạn từ hôm qua lưu sẵn DB -> không được sửa và không được mở ca
+        Shift expiredShift = shiftRepository.save(Shift.builder()
+                .branchId(testBranchId)
+                .shiftDate(yesterdayVN)
+                .shiftType(ShiftType.MORNING)
+                .plannedStart(pastStart)
+                .plannedEnd(pastEnd)
+                .status(ShiftStatus.SCHEDULED)
+                .build());
+
+        mockMvc.perform(put("/api/v1/shifts/schedules/" + expiredShift.getId())
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "shiftDate": "%s",
+                                    "shiftType": "MORNING",
+                                    "plannedStart": "%s",
+                                    "plannedEnd": "%s",
+                                    "assignedEmployeeIds": [%d]
+                                }
+                                """.formatted(yesterdayVN, pastStart, pastEnd, staffId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("INVALID_SHIFT_TIME"));
+
+        mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":1000000}"
+                                .formatted(testBranchId, expiredShift.getId())))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("INVALID_SHIFT_TIME"));
+
+        // 3. Tạo lịch ngày mai -> OK; đổi ngày sửa về hôm qua -> bị chặn; chưa đến ca -> /open bị chặn nhưng /open-candidates vẫn hiện
+        Instant tomorrowStart = tomorrowVN.atTime(7, 0).atZone(vn).toInstant();
+        Instant tomorrowEnd = tomorrowVN.atTime(12, 30).atZone(vn).toInstant();
+        MvcResult tomorrowRes = mockMvc.perform(post("/api/v1/shifts/schedules")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "branchId": %d,
+                                    "shiftDate": "%s",
+                                    "shiftType": "MORNING",
+                                    "plannedStart": "%s",
+                                    "plannedEnd": "%s",
+                                    "assignedEmployeeIds": [%d]
+                                }
+                                """.formatted(testBranchId, tomorrowVN, tomorrowStart, tomorrowEnd, cashierId)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        int tomorrowShiftId = com.jayway.jsonpath.JsonPath.read(tomorrowRes.getResponse().getContentAsString(), "$.data.shiftId");
+
+        mockMvc.perform(put("/api/v1/shifts/schedules/" + tomorrowShiftId)
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "shiftDate": "%s",
+                                    "shiftType": "MORNING",
+                                    "plannedStart": "%s",
+                                    "plannedEnd": "%s",
+                                    "assignedEmployeeIds": [%d]
+                                }
+                                """.formatted(yesterdayVN, pastStart, pastEnd, cashierId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("INVALID_SHIFT_TIME"));
+
+        mockMvc.perform(get("/api/v1/shifts/open-candidates?branchId=" + testBranchId)
+                        .header("Authorization", "Bearer " + bmToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.shiftId==" + tomorrowShiftId + ")]").exists());
+
+        mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":1000000}"
+                                .formatted(testBranchId, tomorrowShiftId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("INVALID_SHIFT_TIME"));
+
+        // 4. Ca bắt đầu sau 90 phút (> 60 phút grace) bị chặn; dời lại còn 20 phút trước giờ bắt đầu thì mở được
+        Instant eveningTomorrowStart = tomorrowVN.atTime(12, 30).atZone(vn).toInstant();
+        Instant eveningTomorrowEnd = tomorrowVN.atTime(18, 0).atZone(vn).toInstant();
+        MvcResult nearFutureRes = mockMvc.perform(post("/api/v1/shifts/schedules")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "branchId": %d,
+                                    "shiftDate": "%s",
+                                    "shiftType": "EVENING",
+                                    "plannedStart": "%s",
+                                    "plannedEnd": "%s",
+                                    "assignedEmployeeIds": [%d]
+                                }
+                                """.formatted(testBranchId, tomorrowVN, eveningTomorrowStart, eveningTomorrowEnd, cashierId)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        int nearFutureId = com.jayway.jsonpath.JsonPath.read(nearFutureRes.getResponse().getContentAsString(), "$.data.shiftId");
+
+        Instant now = Instant.now();
+        Shift savedNear = shiftRepository.findById(nearFutureId).orElseThrow();
+        savedNear.setPlannedStart(now.plusSeconds(90 * 60L));
+        savedNear.setPlannedEnd(now.plusSeconds(6 * 3600L));
+        savedNear = shiftRepository.save(savedNear);
+
+        mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":1000000}"
+                                .formatted(testBranchId, nearFutureId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("INVALID_SHIFT_TIME"));
+
+        savedNear.setPlannedStart(Instant.now().plusSeconds(20 * 60L));
+        shiftRepository.save(savedNear);
+
+        mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":1000000}"
+                                .formatted(testBranchId, nearFutureId)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.status").value("OPEN"));
+    }
+
+    @Test
+    @DisplayName("Đóng ca sớm > 10 phút: gửi yêu cầu chờ Quản lý duyệt, khóa POS, hỗ trợ hủy/từ chối và duyệt chốt ca + Check-out")
+    void testCashierEarlyCloseRequiresManagerApprovalAndAutoCheckOutOnApprove() throws Exception {
+        // Thêm Thu ngân B vào chi nhánh để kiểm tra chặn thế chỗ PIN khi đang chờ đóng ca sớm
+        int seq = SEQ.incrementAndGet();
+        Role cashierRole = roleRepository.findByCode(Roles.CASHIER.code()).orElseThrow();
+        String cashier2Pin = "5678";
+        User cashier2 = userRepository.save(User.builder()
+                .branchId(testBranchId)
+                .roleId(cashierRole.getId())
+                .role(cashierRole)
+                .username("cashier_ec_" + seq)
+                .fullName("Thu Ngân EC " + seq)
+                .passwordHash(passwordEncoder.encode("Password@123"))
+                .pinHash(pinHasher.hash(cashier2Pin))
+                .pinLookupHash(pinHasher.lookupHash(testBranchId, cashier2Pin))
+                .position(Roles.CASHIER)
+                .status(UserStatus.ACTIVE)
+                .build());
+        int cashier2Id = cashier2.getId();
+
+        // Quản lý ở chi nhánh khác để kiểm tra 403 CROSS_BRANCH_DENIED
+        Branch otherBranch = branchRepository.save(Branch.builder()
+                .code("OEC_" + seq)
+                .name("Chi nhánh Khác EC " + seq)
+                .openingTime(LocalTime.of(7, 0))
+                .closingTime(LocalTime.of(22, 0))
+                .status(BranchStatus.OPEN)
+                .build());
+        Role bmRole = roleRepository.findByCode(Roles.BRANCH_MANAGER.code()).orElseThrow();
+        String otherBmUsername = "other_bm_ec_" + seq;
+        userRepository.save(User.builder()
+                .branchId(otherBranch.getId())
+                .roleId(bmRole.getId())
+                .role(bmRole)
+                .username(otherBmUsername)
+                .fullName("QL Khác " + seq)
+                .passwordHash(passwordEncoder.encode("Password@123"))
+                .position(Roles.BRANCH_MANAGER)
+                .status(UserStatus.ACTIVE)
+                .build());
+        MvcResult otherBmLogin = mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"username\":\"%s\",\"password\":\"Password@123\"}".formatted(otherBmUsername)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String otherBmToken = com.jayway.jsonpath.JsonPath.read(otherBmLogin.getResponse().getContentAsString(), "$.data.accessToken");
+
+        // Xếp ca hiện tại với plannedEnd còn > 10 phút (mặc định +4h) và cả cashierId & cashier2Id trực
+        int schedId = scheduleCashierForCurrentWindow(testBranchId, cashierId);
+        Shift scheduled = shiftRepository.findById(schedId).orElseThrow();
+        shiftAssignmentRepository.save(ShiftAssignment.builder()
+                .id(new ShiftAssignmentId(schedId, cashier2Id))
+                .shift(scheduled)
+                .employee(cashier2)
+                .roleInShift("CASHIER")
+                .build());
+
+        MvcResult pinLoginA = mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"employeeId\":%d,\"pin\":\"%s\"}"
+                                .formatted(testBranchId, cashierId, CASHIER_PIN)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String cashierToken = com.jayway.jsonpath.JsonPath.read(pinLoginA.getResponse().getContentAsString(), "$.data.accessToken");
+
+        MvcResult openRes = mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":1000000}"
+                                .formatted(testBranchId, schedId)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        int shiftId = com.jayway.jsonpath.JsonPath.read(openRes.getResponse().getContentAsString(), "$.data.id");
+
+        // 1. Sai PIN khi gửi đóng ca sớm -> 401 INVALID_PIN và không bật earlyClosePending
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":1000000,\"pin\":\"9999\",\"earlyCloseReason\":\"Mất điện\"}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("INVALID_PIN"));
+        assertFalse(shiftRepository.findById(shiftId).orElseThrow().isEarlyClosePending());
+
+        // 2. Lệch tiền thiếu giải trình (BR-38) -> 422 REASON_REQUIRED
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":950000,\"discrepancyReason\":\"\",\"pin\":\"%s\"}".formatted(CASHIER_PIN)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("REASON_REQUIRED"));
+
+        // 3. Thu ngân gửi đóng ca sớm hợp lệ -> status vẫn OPEN, earlyClosePending=true, CHƯA Check-out
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "countedCash": 1000000,
+                                    "pin": "%s",
+                                    "earlyCloseReason": "Sự cố mất điện đột xuất tại cửa hàng"
+                                }
+                                """.formatted(CASHIER_PIN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("OPEN"))
+                .andExpect(jsonPath("$.data.earlyClosePending").value(true))
+                .andExpect(jsonPath("$.data.earlyCloseRequestedBy").value(cashierId))
+                .andExpect(jsonPath("$.data.earlyCloseCountedCash").value(1000000))
+                .andExpect(jsonPath("$.data.earlyCloseReason").value("Sự cố mất điện đột xuất tại cửa hàng"));
+
+        assertTrue(attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(cashierId).isPresent(),
+                "Khi đang chờ Quản lý xác nhận đóng ca sớm thì CHƯA được tự động Check-out");
+
+        // 4. Tạo SecurityAlert EARLY_SHIFT_CLOSE_REQUEST ACTIVE gửi Quản lý chi nhánh & COO
+        var activeAlerts = securityAlertRepository.findByReferenceShiftIdAndAlertTypeAndStatusIn(
+                shiftId, SecurityAlertType.EARLY_SHIFT_CLOSE_REQUEST, java.util.List.of(SecurityAlertStatus.ACTIVE));
+        assertEquals(1, activeAlerts.size());
+
+        mockMvc.perform(get("/api/v1/security-alerts?branchId=" + testBranchId + "&activeOnly=true")
+                        .header("Authorization", "Bearer " + bmToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.activeCount", greaterThanOrEqualTo(1)))
+                .andExpect(jsonPath("$.data.items[?(@.alertType=='EARLY_SHIFT_CLOSE_REQUEST' && @.referenceShiftId==" + shiftId + ")]").exists());
+
+        mockMvc.perform(get("/api/v1/shifts/branches-overview")
+                        .header("Authorization", "Bearer " + cooToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.branchId==" + testBranchId + " && @.earlyClosePending==true)]").exists());
+
+        // 5. Khóa POS, khóa gửi trùng đóng ca sớm và khóa Thu ngân khác đăng nhập PIN
+        mockMvc.perform(post("/api/v1/orders")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"shiftId\":%d,\"totalAmount\":35000,\"finalAmount\":35000}"
+                                .formatted(testBranchId, shiftId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("SHIFT_EARLY_CLOSE_PENDING"));
+
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":1000000,\"pin\":\"%s\"}".formatted(CASHIER_PIN)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("SHIFT_EARLY_CLOSE_PENDING"));
+
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"employeeId\":%d,\"pin\":\"%s\"}"
+                                .formatted(testBranchId, cashier2Id, cashier2Pin)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        // 6. Thu ngân tự hủy yêu cầu đóng ca sớm -> mở lại POS & alert chuyển REJECTED
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/early-close/reject")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"Có điện trở lại, tiếp tục bán hàng\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("OPEN"))
+                .andExpect(jsonPath("$.data.earlyClosePending").value(false));
+
+        assertEquals(SecurityAlertStatus.REJECTED,
+                securityAlertRepository.findById(activeAlerts.get(0).getId()).orElseThrow().getStatus());
+
+        mockMvc.perform(post("/api/v1/orders")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"shiftId\":%d,\"totalAmount\":35000,\"finalAmount\":35000}"
+                                .formatted(testBranchId, shiftId)))
+                .andExpect(status().isCreated());
+
+        // 7. Gửi lại yêu cầu đóng ca sớm -> Quản lý từ chối -> mở lại ca
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":995000,\"discrepancyReason\":\"Thiếu 5k tiền lẻ\",\"pin\":\"%s\"}"
+                                .formatted(CASHIER_PIN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.earlyClosePending").value(true));
+
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/early-close/reject")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"Quán đang đông khách, chưa cho đóng ca sớm\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("OPEN"))
+                .andExpect(jsonPath("$.data.earlyClosePending").value(false));
+
+        // 8. Gửi lại yêu cầu đóng ca sớm -> Quản lý chi nhánh khác bị 403; Quản lý chi nhánh này duyệt -> CLOSED + Check-out + Alert APPROVED
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "countedCash": 1000000,
+                                    "pin": "%s",
+                                    "earlyCloseReason": "Chốt két sớm cuối buổi"
+                                }
+                                """.formatted(CASHIER_PIN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.earlyClosePending").value(true));
+
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/early-close/approve")
+                        .header("Authorization", "Bearer " + otherBmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/early-close/approve")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"approveNote\":\"Đã kiểm két trực tiếp và xác nhận\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CLOSED"))
+                .andExpect(jsonPath("$.data.earlyClosePending").value(false))
+                .andExpect(jsonPath("$.data.countedCash").value(1000000));
+
+        assertTrue(attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(cashierId).isEmpty(),
+                "Sau khi Quản lý duyệt đóng ca sớm, Thu ngân phải được tự động Check-out");
+        var latestAtt = attendanceRepository.findAllByUserIdOrderByCheckInTimeDesc(cashierId).get(0);
+        assertEquals(AttendanceStatus.COMPLETED, latestAtt.getStatus());
+
+        var remainingActiveAlerts = securityAlertRepository.findByReferenceShiftIdAndAlertTypeAndStatusIn(
+                shiftId, SecurityAlertType.EARLY_SHIFT_CLOSE_REQUEST, java.util.List.of(SecurityAlertStatus.ACTIVE));
+        assertTrue(remainingActiveAlerts.isEmpty());
+
+        mockMvc.perform(get("/api/v1/shifts/branches-overview")
+                        .header("Authorization", "Bearer " + cooToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.branchId==" + testBranchId + " && @.hasOpenShift==false && @.earlyClosePending==false)]").exists());
+
+        // Cashier vẫn poll được chi tiết ca CLOSED gần nhất để tự đăng xuất về màn PIN
+        mockMvc.perform(get("/api/v1/shifts/" + shiftId)
+                        .header("Authorization", "Bearer " + cashierToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.shift.status").value("CLOSED"))
+                .andExpect(jsonPath("$.data.transactions[?(@.type=='CLOSE')]").exists());
+
+        // 9. Khi ca đóng hẳn và chưa đến khung mở ca mới -> màn PIN không còn thu ngân của ca đã đóng
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + testBranchId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(0)));
+
+        // 10. Kiểm tra biên <= 10 phút: nếu còn <= 10 phút trước plannedEnd, Thu ngân đóng ca trực tiếp không cần chờ duyệt
+        int boundarySchedId = scheduleCashierForCurrentWindow(testBranchId, cashierId);
+        MvcResult pinLoginBoundary = mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"employeeId\":%d,\"pin\":\"%s\"}"
+                                .formatted(testBranchId, cashierId, CASHIER_PIN)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String boundaryToken = com.jayway.jsonpath.JsonPath.read(pinLoginBoundary.getResponse().getContentAsString(), "$.data.accessToken");
+
+        MvcResult openBoundaryRes = mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + boundaryToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":1000000}"
+                                .formatted(testBranchId, boundarySchedId)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        int boundaryShiftId = com.jayway.jsonpath.JsonPath.read(openBoundaryRes.getResponse().getContentAsString(), "$.data.id");
+
+        Shift boundaryShift = shiftRepository.findById(boundaryShiftId).orElseThrow();
+        boundaryShift.setPlannedEnd(Instant.now().plusSeconds(480)); // còn 8 phút (< 10 phút)
+        shiftRepository.save(boundaryShift);
+
+        mockMvc.perform(post("/api/v1/shifts/" + boundaryShiftId + "/close")
+                        .header("Authorization", "Bearer " + boundaryToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":1000000,\"pin\":\"%s\"}".formatted(CASHIER_PIN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CLOSED"))
+                .andExpect(jsonPath("$.data.earlyClosePending").value(false));
+
+        assertTrue(attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(cashierId).isEmpty());
     }
 }

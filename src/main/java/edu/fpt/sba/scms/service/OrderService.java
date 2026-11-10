@@ -16,9 +16,9 @@ public interface OrderService {
 
     OrderDetailDto createOrder(CreateOrderRequest request, UserPrincipal principal);
 
-    Page<OrderDto> listOrders(OrderListQuery query);
+    Page<OrderDto> listOrders(OrderListQuery query, UserPrincipal principal);
 
-    OrderDetailDto getOrderById(Integer id);
+    OrderDetailDto getOrderById(Integer id, UserPrincipal principal);
 
     OrderDetailDto applyVoucher(Integer id, ApplyVoucherRequest request);
 

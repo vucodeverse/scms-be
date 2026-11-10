@@ -27,6 +27,7 @@ public record BranchShiftOverviewResponse(
         Instant previousClosedAt,
         Integer activeCashierId,
         String activeCashierName,
-        boolean handoverPending
+        boolean handoverPending,
+        boolean earlyClosePending
 ) {
 }
