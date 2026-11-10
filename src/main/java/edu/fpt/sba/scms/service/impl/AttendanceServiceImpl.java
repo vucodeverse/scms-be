@@ -122,7 +122,7 @@ public class AttendanceServiceImpl implements AttendanceService {
         // BR-07: Khoảng cách tối thiểu giữa lần Check-in và Check-out phải >= 15 phút (kiểm tra qua AttendanceCalculator)
         if (!AttendanceCalculator.isMinIntervalSatisfied(workedMinutes)) {
             throw new BusinessRuleException(BusinessErrorCode.ATTENDANCE_MIN_INTERVAL,
-                    "Khoảng cách chấm công tối thiểu giữa lần check-in và check-out phải từ 15 phút trở lên (BR-07).");
+                    "Khoảng cách chấm công tối thiểu giữa lần check-in và check-out phải từ 15 phút trở lên.");
         }
 
         attendance.setCheckOutTime(now);
@@ -165,7 +165,7 @@ public class AttendanceServiceImpl implements AttendanceService {
             // BR-07: Khoảng cách tối thiểu giữa lần Check-in và Check-out phải >= 15 phút
             if (!AttendanceCalculator.isMinIntervalSatisfied(workedMinutes)) {
                 throw new BusinessRuleException(BusinessErrorCode.ATTENDANCE_MIN_INTERVAL,
-                        "Khoảng cách chấm công tối thiểu giữa lần check-in và check-out phải từ 15 phút trở lên (BR-07).");
+                        "Khoảng cách chấm công tối thiểu giữa lần check-in và check-out phải từ 15 phút trở lên.");
             }
 
             attendance.setCheckOutTime(now);

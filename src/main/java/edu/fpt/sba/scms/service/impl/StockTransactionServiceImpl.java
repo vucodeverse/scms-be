@@ -524,7 +524,7 @@ public class StockTransactionServiceImpl implements StockTransactionService {
         // BR-43: Bắt buộc lý do chi tiết >= 10 ký tự
         if (request.reason() == null || request.reason().trim().length() < 10) {
             throw ValidationException.single("reason",
-                    "Lý do hủy hàng bắt buộc phải mô tả chi tiết nguyên nhân (tối thiểu 10 ký tự) theo quy định BR-43.");
+                    "Lý do hủy hàng bắt buộc phải mô tả chi tiết nguyên nhân (tối thiểu 10 ký tự).");
         }
         if (request.reasonCategory() == null || request.reasonCategory().isBlank()) {
             throw ValidationException.single("reasonCategory", "Phân loại nguyên nhân không được để trống.");

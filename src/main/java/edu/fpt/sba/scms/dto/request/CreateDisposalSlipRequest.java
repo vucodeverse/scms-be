@@ -25,7 +25,7 @@ public record CreateDisposalSlipRequest(
 
         @Schema(description = "Lý do giải trình chi tiết bắt buộc (tối thiểu 10 ký tự, BR-43)", example = "Sữa tươi Dalat Milk lô 01/11 bị chua do hỏng lốc làm mát tủ bảo quản đêm 06/11")
         @NotBlank(message = "Lý do hủy hàng không được để trống.")
-        @Size(min = 10, max = 500, message = "Lý do hủy hàng bắt buộc phải mô tả chi tiết nguyên nhân (tối thiểu 10 ký tự) theo quy định BR-43.")
+        @Size(min = 10, max = 500, message = "Lý do hủy hàng bắt buộc phải mô tả chi tiết nguyên nhân (tối thiểu 10 ký tự).")
         String reason,
 
         @Schema(description = "Đường dẫn ảnh chụp hiện trường / hàng hỏng bằng chứng", example = "uploads/evidence/20261107_spoiled_milk_lot01.jpg")

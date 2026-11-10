@@ -567,7 +567,7 @@ public class ShiftServiceImpl implements ShiftService {
         if (ShiftCashCalculator.hasDiscrepancy(counted, expected) && !StringUtils.hasText(discrepancyReason)) {
             throw new BusinessRuleException(BusinessErrorCode.REASON_REQUIRED,
                     "Phát hiện chênh lệch tiền mặt thực tế so với sổ sách (" + variance.toPlainString()
-                            + " đ). Bắt buộc phải nhập lý do giải trình theo quy định BR-38.");
+                            + " đ). Bắt buộc phải nhập lý do giải trình.");
         }
 
         User pinVerifiedActor = StringUtils.hasText(request.pin())
@@ -712,7 +712,7 @@ public class ShiftServiceImpl implements ShiftService {
         if (ShiftCashCalculator.hasDiscrepancy(counted, expected) && !StringUtils.hasText(discrepancyReason)) {
             throw new BusinessRuleException(BusinessErrorCode.REASON_REQUIRED,
                     "Phát hiện chênh lệch tiền mặt thực tế so với sổ sách (" + variance.toPlainString()
-                            + " đ). Bắt buộc phải nhập lý do giải trình theo quy định BR-38.");
+                            + " đ). Bắt buộc phải nhập lý do giải trình.");
         }
 
         Instant now = Instant.now();

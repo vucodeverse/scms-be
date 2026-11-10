@@ -539,7 +539,7 @@ public class OrderServiceImpl implements OrderService {
 
         if (order.isPaid()) {
             throw new BusinessRuleException(BusinessErrorCode.ORDER_FROZEN,
-                    "Đơn hàng đã thanh toán (PAID) không thể hủy trực tiếp, phải qua quy trình hoàn tiền (BR-26).");
+                    "Đơn hàng đã thanh toán (PAID) không thể hủy trực tiếp, phải qua quy trình hoàn tiền.");
         }
 
         if (order.isCancelled()) {
@@ -554,7 +554,7 @@ public class OrderServiceImpl implements OrderService {
 
         if (request.cancelReason() == null || request.cancelReason().isBlank()) {
             throw new BusinessRuleException(BusinessErrorCode.REASON_REQUIRED,
-                    "Lý do hủy đơn hàng là bắt buộc (BR-26b).");
+                    "Lý do hủy đơn hàng là bắt buộc.");
         }
 
         OrderStatus previousStatus = order.getStatus();

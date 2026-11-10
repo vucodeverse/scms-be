@@ -83,7 +83,7 @@ public class RefundServiceImpl implements RefundService {
         // 4. Tìm ca mở hiện tại của chi nhánh để trừ tiền két (BR-34, BR-36)
         Shift openShift = shiftRepository.findFirstByBranchIdAndStatusOrderByOpenedAtDesc(order.getBranchId(), ShiftStatus.OPEN)
                 .orElseThrow(() -> new BusinessRuleException(BusinessErrorCode.SHIFT_NOT_OPEN,
-                        "Chi nhánh chưa mở ca làm việc. Bắt buộc phải có ca mở để xuất tiền hoàn từ két tiền mặt (BR-34)."));
+                        "Chi nhánh chưa mở ca làm việc. Bắt buộc phải có ca mở để xuất tiền hoàn từ két tiền mặt."));
 
         if (openShift.isHandoverPending()) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
@@ -160,7 +160,7 @@ public class RefundServiceImpl implements RefundService {
     private User verifyApproverPin(Integer branchId, String pin, BigDecimal amount) {
         if (!StringUtils.hasText(pin)) {
             throw new BusinessRuleException(BusinessErrorCode.MANAGER_PIN_REQUIRED,
-                    "Thao tác hoàn tiền bắt buộc phải có mã PIN phê duyệt (BR-32).");
+                    "Thao tác hoàn tiền bắt buộc phải có mã PIN phê duyệt.");
         }
         String lookupHash = pinHasher.lookupHash(branchId, pin.trim());
         User approver = userRepository.findFirstByBranchIdAndPinLookupHashAndStatus(branchId, lookupHash, UserStatus.ACTIVE)
@@ -176,7 +176,7 @@ public class RefundServiceImpl implements RefundService {
         if (RefundPolicy.requiresCooApproval(amount)) {
             if (!Roles.COO.code().equals(role)) {
                 throw new BusinessRuleException(BusinessErrorCode.REFUND_NOT_ALLOWED,
-                        "Số tiền hoàn vượt quá hạn mức 500.000 đ (BR-35). Bắt buộc phải có mã PIN phê duyệt của Giám đốc vận hành (COO).");
+                        "Số tiền hoàn vượt quá hạn mức 500.000 đ. Bắt buộc phải có mã PIN phê duyệt của Giám đốc vận hành (COO).");
             }
         } else {
             if (!Roles.BRANCH_MANAGER.code().equals(role) && !Roles.COO.code().equals(role)) {
