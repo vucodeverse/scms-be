@@ -381,6 +381,10 @@ public class AuthServiceImpl implements AuthService {
                 branchId, ShiftStatus.OPEN);
         if (!openShifts.isEmpty()) {
             for (Shift openShift : openShifts) {
+                if (openShift.isManagerClosePending()) {
+                    // Thu ngân đã bàn giao két cuối ca và tự check-out để chờ Quản lý nhận tiền & đóng ca -> khóa PIN.
+                    continue;
+                }
                 Integer activeCashierId = openShift.getActiveCashierId();
                 if (openShift.isEarlyClosePending()) {
                     Integer requesterId = openShift.getEarlyCloseRequestedBy();
@@ -476,6 +480,9 @@ public class AuthServiceImpl implements AuthService {
         List<Shift> openShifts = shiftRepository.findByBranchIdAndStatusOrderByOpenedAtDescIdDesc(
                 branchId, ShiftStatus.OPEN);
         for (Shift openShift : openShifts) {
+            if (openShift.isManagerClosePending()) {
+                return "Ca đang mở đã chốt kiểm két cuối ca và đang chờ Quản lý chi nhánh xác nhận nhận tiền / đóng ca. Vui lòng chờ Quản lý xử lý.";
+            }
             if (openShift.isEarlyClosePending()
                     && user != null
                     && !Objects.equals(openShift.getEarlyCloseRequestedBy(), user.getId())

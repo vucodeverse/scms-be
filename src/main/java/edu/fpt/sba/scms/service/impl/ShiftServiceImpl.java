@@ -11,6 +11,7 @@ import edu.fpt.sba.scms.common.enums.SecurityAlertSeverity;
 import edu.fpt.sba.scms.common.enums.SecurityAlertStatus;
 import edu.fpt.sba.scms.common.enums.SecurityAlertType;
 import edu.fpt.sba.scms.common.enums.ShiftHandoverStatus;
+import edu.fpt.sba.scms.common.enums.ShiftHandoverType;
 import edu.fpt.sba.scms.common.enums.ShiftStatus;
 import edu.fpt.sba.scms.common.enums.ShiftType;
 import edu.fpt.sba.scms.common.enums.SortDirection;
@@ -29,17 +30,22 @@ import edu.fpt.sba.scms.domain.shift.ShiftSchedulePolicy;
 import edu.fpt.sba.scms.dto.PageQueryDefaults;
 import edu.fpt.sba.scms.dto.request.AcceptShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.ApproveEarlyCloseRequest;
+import edu.fpt.sba.scms.dto.request.ApproveManagerCloseRequest;
 import edu.fpt.sba.scms.dto.request.CancelShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.CashAdjustmentRequest;
 import edu.fpt.sba.scms.dto.request.CloseShiftRequest;
 import edu.fpt.sba.scms.dto.request.CreateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.InitiateShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.OpenShiftRequest;
+import edu.fpt.sba.scms.dto.request.PostCloseCashOutRequest;
+import edu.fpt.sba.scms.dto.request.PreOpenCashInRequest;
 import edu.fpt.sba.scms.dto.request.RejectEarlyCloseRequest;
+import edu.fpt.sba.scms.dto.request.RejectManagerCloseRequest;
 import edu.fpt.sba.scms.dto.request.UpdateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.query.ShiftListQuery;
 import edu.fpt.sba.scms.dto.response.BranchShiftOverviewResponse;
 import edu.fpt.sba.scms.dto.response.CashTransactionResponse;
+import edu.fpt.sba.scms.dto.response.PreOpenCashAdjustmentResponse;
 import edu.fpt.sba.scms.dto.response.PreviousShiftSummaryResponse;
 import edu.fpt.sba.scms.dto.response.ShiftHandoverResponse;
 import edu.fpt.sba.scms.dto.response.ShiftResponse;
@@ -49,6 +55,7 @@ import edu.fpt.sba.scms.mapper.ShiftMapper;
 import edu.fpt.sba.scms.model.Attendance;
 import edu.fpt.sba.scms.model.Branch;
 import edu.fpt.sba.scms.model.CashTransaction;
+import edu.fpt.sba.scms.model.PreOpenCashAdjustment;
 import edu.fpt.sba.scms.model.SecurityAlert;
 import edu.fpt.sba.scms.model.Shift;
 import edu.fpt.sba.scms.model.ShiftAssignment;
@@ -58,6 +65,7 @@ import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.AttendanceRepository;
 import edu.fpt.sba.scms.repository.BranchRepository;
 import edu.fpt.sba.scms.repository.CashTransactionRepository;
+import edu.fpt.sba.scms.repository.PreOpenCashAdjustmentRepository;
 import edu.fpt.sba.scms.repository.SecurityAlertRepository;
 import edu.fpt.sba.scms.repository.ShiftAssignmentRepository;
 import edu.fpt.sba.scms.repository.ShiftHandoverRepository;
@@ -121,6 +129,7 @@ public class ShiftServiceImpl implements ShiftService {
     private final UserRepository userRepository;
     private final BranchRepository branchRepository;
     private final SecurityAlertRepository securityAlertRepository;
+    private final PreOpenCashAdjustmentRepository preOpenCashAdjustmentRepository;
     private final PinHasher pinHasher;
     private final PinLockoutService pinLockoutService;
     private final AuditLogService auditLogService;
@@ -139,6 +148,19 @@ public class ShiftServiceImpl implements ShiftService {
                 .findFirstByBranchIdAndStatusOrderByClosedAtDescIdDesc(branchId, ShiftStatus.CLOSED)
                 .orElse(null);
 
+        List<PreOpenCashAdjustment> pendingPreOpen = preOpenCashAdjustmentRepository.findPendingByBranchIdForUpdate(branchId);
+        BigDecimal preOpenTotal = pendingPreOpen.stream()
+                .map(PreOpenCashAdjustment::getAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal countedAtOpen = request.openingCash();
+        if (preOpenTotal.compareTo(BigDecimal.ZERO) > 0 && countedAtOpen.compareTo(preOpenTotal) < 0) {
+            throw new InvalidFieldValueException("openingCash",
+                    "Tổng tiền thực đếm đầu ca (" + countedAtOpen.toPlainString()
+                            + " đ) không thể nhỏ hơn tổng tiền Quản lý đã nạp đầu ngày ("
+                            + preOpenTotal.toPlainString() + " đ).");
+        }
+
         Integer previousShiftId = null;
         BigDecimal previousClosingCash = null;
         BigDecimal openingVariance = null;
@@ -147,26 +169,57 @@ public class ShiftServiceImpl implements ShiftService {
         if (previousClosed != null) {
             previousShiftId = previousClosed.getId();
             previousClosingCash = resolvePreviousClosingCash(previousClosed);
-            openingVariance = ShiftCashCalculator.calculateOpeningVariance(
-                    request.openingCash(), previousClosingCash);
-            if (ShiftCashCalculator.hasOpeningDiscrepancy(request.openingCash(), previousClosingCash)
-                    && !StringUtils.hasText(trimmedNote)) {
+        }
+
+        if (previousClosed != null || preOpenTotal.compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal basePrev = previousClosingCash != null ? previousClosingCash : BigDecimal.ZERO;
+            BigDecimal expectedOpeningTotal = basePrev.add(preOpenTotal);
+            openingVariance = ShiftCashCalculator.calculateVariance(countedAtOpen, expectedOpeningTotal);
+            if (openingVariance.compareTo(BigDecimal.ZERO) != 0 && !StringUtils.hasText(trimmedNote)) {
+                String expectedDetail = preOpenTotal.compareTo(BigDecimal.ZERO) > 0
+                        ? "dự kiến đầu ca (" + expectedOpeningTotal.toPlainString()
+                                + " đ = Kết ca trước " + basePrev.toPlainString()
+                                + " đ + Nạp đầu ngày " + preOpenTotal.toPlainString() + " đ)"
+                        : "kết ca trước (" + basePrev.toPlainString() + " đ)";
                 throw new BusinessRuleException(BusinessErrorCode.REASON_REQUIRED,
-                        "Tiền đầu ca (" + request.openingCash().toPlainString()
+                        "Tiền đầu ca (" + countedAtOpen.toPlainString()
                                 + " đ) lệch " + openingVariance.toPlainString()
-                                + " đ so với kết ca trước (" + previousClosingCash.toPlainString()
-                                + " đ). Vui lòng nhập ghi chú bàn giao / giải trình chênh lệch đầu ca.");
+                                + " đ so với " + expectedDetail
+                                + ". Vui lòng nhập ghi chú bàn giao / giải trình chênh lệch đầu ca.");
             }
         }
 
+        BigDecimal baseOpeningCash = countedAtOpen.subtract(preOpenTotal);
         Integer actorId = resolveActorId(principal);
-        populateOpeningFields(shift, request.openingCash(), actorId, now,
+        populateOpeningFields(shift, baseOpeningCash, countedAtOpen, preOpenTotal, actorId, now,
                 previousShiftId, previousClosingCash, openingVariance, trimmedNote);
 
         Shift savedShift = shiftRepository.save(shift);
         recordOpeningCashTransaction(
-                savedShift.getId(), request.openingCash(), trimmedNote,
+                savedShift.getId(), baseOpeningCash, preOpenTotal, trimmedNote,
                 previousClosingCash, openingVariance, actorId);
+
+        if (!pendingPreOpen.isEmpty()) {
+            List<CashTransaction> preOpenTxs = new ArrayList<>(pendingPreOpen.size());
+            for (PreOpenCashAdjustment adj : pendingPreOpen) {
+                Integer creator = adj.getCreatedBy() != null ? adj.getCreatedBy() : actorId;
+                Integer approver = adj.getApprovedBy() != null ? adj.getApprovedBy() : creator;
+                preOpenTxs.add(CashTransaction.builder()
+                        .shiftId(savedShift.getId())
+                        .type(CashTransactionType.CASH_IN)
+                        .amount(adj.getAmount())
+                        .reason(truncate("[Nạp đầu ngày] " + adj.getReason(), MAX_REASON_LEN))
+                        .createdBy(creator)
+                        .approvedBy(approver)
+                        .isSelfInitiated(Objects.equals(creator, approver))
+                        .createdAt(adj.getCreatedAt())
+                        .build());
+                adj.setAppliedShiftId(savedShift.getId());
+                adj.setAppliedAt(now);
+            }
+            cashTransactionRepository.saveAll(preOpenTxs);
+            preOpenCashAdjustmentRepository.saveAll(pendingPreOpen);
+        }
 
         boolean autoCheckedIn = false;
         if (principal != null && Roles.CASHIER.code().equals(principal.role())) {
@@ -174,8 +227,10 @@ public class ShiftServiceImpl implements ShiftService {
                     savedShift, principal.userId(), now, "Tự động check-in khi mở ca #" + savedShift.getId(), false);
         }
 
-        String auditDetail = "Mở ca ID=" + savedShift.getId() + ", tiền đầu ca=" + request.openingCash();
-        if (previousClosingCash != null) {
+        String auditDetail = "Mở ca ID=" + savedShift.getId()
+                + ", tiền đầu ca=" + baseOpeningCash
+                + (preOpenTotal.compareTo(BigDecimal.ZERO) > 0 ? ", nạp đầu ngày=" + preOpenTotal + ", tổng thực két=" + countedAtOpen : "");
+        if (previousClosingCash != null || preOpenTotal.compareTo(BigDecimal.ZERO) > 0) {
             auditDetail += ", kết ca trước=" + previousClosingCash + ", chênh lệch đầu ca=" + openingVariance;
         }
         if (autoCheckedIn) {
@@ -183,8 +238,8 @@ public class ShiftServiceImpl implements ShiftService {
         }
         auditLogService.log(AuditAction.SHIFT_OPEN, "shift", savedShift.getId(), null, auditDetail);
 
-        log.info("Mở ca thành công: shiftId={}, branchId={}, openingCash={}, openingVariance={}, autoCheckedIn={}",
-                savedShift.getId(), branchId, request.openingCash(), openingVariance, autoCheckedIn);
+        log.info("Mở ca thành công: shiftId={}, branchId={}, baseOpeningCash={}, preOpenCashIn={}, expectedCash={}, openingVariance={}, autoCheckedIn={}",
+                savedShift.getId(), branchId, baseOpeningCash, preOpenTotal, countedAtOpen, openingVariance, autoCheckedIn);
         return enrichShiftResponse(savedShift);
     }
 
@@ -196,6 +251,10 @@ public class ShiftServiceImpl implements ShiftService {
         if (shift.isHandoverPending()) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
                     "Két tiền đang tạm khóa chờ bàn giao giữa ca. Vui lòng hoàn tất hoặc hủy bàn giao trước khi nạp tiền.");
+        }
+        if (shift.isManagerClosePending()) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_MANAGER_CLOSE_PENDING,
+                    "Ca làm việc đã chốt kiểm két cuối ca và đang chờ Quản lý chi nhánh xác nhận nhận tiền / đóng ca.");
         }
         if (shift.isEarlyClosePending()) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_EARLY_CLOSE_PENDING,
@@ -236,6 +295,10 @@ public class ShiftServiceImpl implements ShiftService {
         if (shift.isHandoverPending()) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
                     "Két tiền đang tạm khóa chờ bàn giao giữa ca. Vui lòng hoàn tất hoặc hủy bàn giao trước khi rút tiền.");
+        }
+        if (shift.isManagerClosePending()) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_MANAGER_CLOSE_PENDING,
+                    "Ca làm việc đã chốt kiểm két cuối ca và đang chờ Quản lý chi nhánh xác nhận nhận tiền / đóng ca.");
         }
         if (shift.isEarlyClosePending()) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_EARLY_CLOSE_PENDING,
@@ -284,6 +347,10 @@ public class ShiftServiceImpl implements ShiftService {
         if (shift.isHandoverPending()) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
                     "Ca làm việc đang có yêu cầu bàn giao két chờ xác nhận. Vui lòng hoàn tất hoặc hủy yêu cầu hiện tại trước.");
+        }
+        if (shift.isManagerClosePending()) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_MANAGER_CLOSE_PENDING,
+                    "Ca làm việc đã chốt kiểm két cuối ca và đang chờ Quản lý chi nhánh xác nhận nhận tiền / đóng ca.");
         }
         if (shift.isEarlyClosePending()) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_EARLY_CLOSE_PENDING,
@@ -551,10 +618,20 @@ public class ShiftServiceImpl implements ShiftService {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_HANDOVER_PENDING,
                     "Két tiền đang chờ xác nhận bàn giao giữa ca. Vui lòng hoàn tất kiểm két nhận ca (hoặc hủy bàn giao) trước khi đóng ca.");
         }
+        if (shift.isManagerClosePending() && isCashier(principal)) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_MANAGER_CLOSE_PENDING,
+                    "Ca #" + shift.getId()
+                            + " đã chốt kiểm két cuối ca và đang chờ Quản lý chi nhánh xác nhận nhận tiền / đóng ca.");
+        }
         if (shift.isEarlyClosePending() && isCashier(principal)) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_EARLY_CLOSE_PENDING,
                     "Yêu cầu đóng ca sớm cho ca #" + shift.getId()
                             + " đã được gửi và đang chờ Quản lý chi nhánh xác nhận. Vui lòng chờ Quản lý duyệt hoặc hủy yêu cầu để tiếp tục ca.");
+        }
+        boolean handoverToManager = Boolean.TRUE.equals(request.handoverToManager());
+        if (handoverToManager && !isCashier(principal)) {
+            throw new BusinessRuleException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Quản lý / COO đang trực tiếp thao tác không cần gửi bàn giao cho chính mình; vui lòng đóng ca trực tiếp và rút tiền sau kết ca nếu cần.");
         }
 
         BigDecimal expected = shift.getExpectedCash() != null ? shift.getExpectedCash() : shift.getOpeningCash();
@@ -570,12 +647,101 @@ public class ShiftServiceImpl implements ShiftService {
                             + " đ). Bắt buộc phải nhập lý do giải trình.");
         }
 
+        if (handoverToManager && !StringUtils.hasText(request.pin())) {
+            throw new InvalidPinException(
+                    "Thu ngân bắt buộc nhập mã PIN cá nhân (4–6 số) để xác nhận kiểm két và bàn giao cuối ca cho Quản lý.");
+        }
+
         User pinVerifiedActor = StringUtils.hasText(request.pin())
                 ? verifyActorPinForShiftClose(principal, shift.getBranchId(), request.pin())
                 : null;
 
         Instant now = Instant.now();
         Integer actorId = resolveActorId(principal);
+
+        if (handoverToManager) {
+            boolean earlyClose = ShiftSchedulePolicy.isEarlyClose(shift.getPlannedEnd(), now);
+            String handoverReasonText = StringUtils.hasText(request.handoverReason())
+                    ? request.handoverReason().trim()
+                    : null;
+            String earlyReasonText = StringUtils.hasText(request.earlyCloseReason())
+                    ? request.earlyCloseReason().trim()
+                    : null;
+            String combinedReason;
+            if (handoverReasonText != null && earlyReasonText != null && !handoverReasonText.equals(earlyReasonText)) {
+                combinedReason = handoverReasonText + " (" + earlyReasonText + ")";
+            } else if (handoverReasonText != null) {
+                combinedReason = handoverReasonText;
+            } else if (earlyReasonText != null) {
+                combinedReason = "Đóng ca sớm: " + earlyReasonText;
+            } else if (earlyClose) {
+                combinedReason = "Bàn giao két cuối ca & đóng ca sớm chờ Quản lý xác nhận";
+            } else {
+                combinedReason = "Bàn giao két cuối ca chờ Quản lý xác nhận nhận tiền & đóng ca";
+            }
+
+            Integer fromUserId = pinVerifiedActor != null
+                    ? pinVerifiedActor.getId()
+                    : (actorId != null ? actorId : shift.getActiveCashierId());
+
+            ShiftHandover handover = ShiftHandover.builder()
+                    .shiftId(shift.getId())
+                    .branchId(shift.getBranchId())
+                    .fromUserId(fromUserId)
+                    .toUserId(null)
+                    .handoverType(ShiftHandoverType.MANAGER_CLOSE)
+                    .status(ShiftHandoverStatus.PENDING_RECEIVE)
+                    .reason(truncate(combinedReason, MAX_REASON_LEN))
+                    .expectedCashAtOut(expected)
+                    .outgoingCountedCash(counted)
+                    .outgoingVariance(variance)
+                    .outgoingNote(discrepancyReason)
+                    .outgoingAt(now)
+                    .outgoingConfirmedBy(actorId)
+                    .build();
+            ShiftHandover savedHandover = shiftHandoverRepository.save(handover);
+
+            shift.setManagerClosePending(Boolean.TRUE);
+            Shift savedShift = shiftRepository.save(shift);
+
+            Set<Integer> checkoutIds = new LinkedHashSet<>();
+            if (fromUserId != null) {
+                checkoutIds.add(fromUserId);
+            }
+            if (shift.getActiveCashierId() != null) {
+                checkoutIds.add(shift.getActiveCashierId());
+            }
+            List<Long> autoOutMinutesList = new ArrayList<>();
+            for (Integer uid : checkoutIds) {
+                boolean isPrimary = fromUserId != null && uid.equals(fromUserId);
+                Long mins = isPrimary
+                        ? autoCheckOutForUserId(uid, savedShift.getId(), now,
+                                "Tự động check-out khi bàn giao két cuối ca #" + savedShift.getId())
+                        : autoCheckOutIfBranchStaff(uid, savedShift.getId(), now,
+                                "Tự động check-out khi bàn giao két cuối ca #" + savedShift.getId());
+                if (mins != null) {
+                    autoOutMinutesList.add(mins);
+                }
+            }
+
+            String cashierName = resolveActorDisplayName(pinVerifiedActor, principal, fromUserId);
+            createManagerCloseAlert(
+                    savedShift, fromUserId, cashierName, counted, expected, variance,
+                    combinedReason, discrepancyReason, earlyClose);
+
+            auditLogService.log(AuditAction.SHIFT_CLOSE, "shift", savedShift.getId(), "OPEN",
+                    "Thu ngân gửi bàn giao két cuối ca chờ Quản lý xác nhận shiftId=" + savedShift.getId()
+                            + ", handoverId=" + savedHandover.getId()
+                            + ", fromUserId=" + fromUserId
+                            + ", countedOut=" + counted
+                            + ", expected=" + expected
+                            + ", variance=" + variance
+                            + (!autoOutMinutesList.isEmpty() ? ", autoCheckOutMinutes=" + autoOutMinutesList : ""));
+
+            log.info("Đã gửi bàn giao két cuối ca chờ Quản lý nhận: shiftId={}, handoverId={}, fromUserId={}, counted={}, variance={}, autoCheckOutMinutes={}",
+                    savedShift.getId(), savedHandover.getId(), fromUserId, counted, variance, autoOutMinutesList);
+            return enrichShiftResponse(savedShift);
+        }
 
         if (isCashier(principal) && ShiftSchedulePolicy.isEarlyClose(shift.getPlannedEnd(), now)) {
             String earlyReason = StringUtils.hasText(request.earlyCloseReason())
@@ -613,6 +779,13 @@ public class ShiftServiceImpl implements ShiftService {
             resolveEarlyCloseAlerts(shift.getId(), SecurityAlertStatus.APPROVED, principal, actorId, now,
                     "Quản lý / COO xác nhận đóng ca trực tiếp cho ca #" + shift.getId() + ".");
             shift.setEarlyClosePending(Boolean.FALSE);
+        }
+
+        if (shift.isManagerClosePending()) {
+            resolveManagerCloseAlerts(shift.getId(), SecurityAlertStatus.APPROVED, principal, actorId, now,
+                    "Quản lý / COO xác nhận đóng ca trực tiếp cho ca #" + shift.getId() + ".");
+            cancelPendingHandoverOnForceClose(shift.getId(), actorId, now);
+            shift.setManagerClosePending(Boolean.FALSE);
         }
 
         if (shift.isHandoverPending()) {
@@ -841,6 +1014,360 @@ public class ShiftServiceImpl implements ShiftService {
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ShiftResponse approveManagerClose(Integer shiftId, ApproveManagerCloseRequest request, UserPrincipal principal) {
+        if (principal == null) {
+            throw new UnauthorizedException(ErrorCode.AUTH_REQUIRED);
+        }
+        Shift shift = getOpenShiftForUpdateOrThrow(shiftId);
+        if (!shift.isManagerClosePending()) {
+            throw new BusinessRuleException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Ca #" + shift.getId() + " hiện không ở trạng thái chờ Quản lý xác nhận nhận két cuối ca.");
+        }
+
+        ShiftHandover handover = shiftHandoverRepository
+                .findFirstByShiftIdAndStatusAndHandoverTypeOrderByIdDesc(
+                        shift.getId(), ShiftHandoverStatus.PENDING_RECEIVE, ShiftHandoverType.MANAGER_CLOSE)
+                .orElseThrow(() -> new BusinessRuleException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "Không tìm thấy phiếu bàn giao két cuối ca đang chờ Quản lý xác nhận."));
+
+        Integer actorId = resolveActorId(principal);
+        if (request != null && StringUtils.hasText(request.pin())) {
+            verifyActorPinForUser(actorId, shift.getBranchId(), request.pin(), "MANAGER_CLOSE_APPROVE");
+        }
+
+        BigDecimal incomingCounted = (request != null && request.countedCash() != null)
+                ? request.countedCash()
+                : handover.getOutgoingCountedCash();
+        if (incomingCounted == null) {
+            throw new InvalidFieldValueException("countedCash", "Số tiền Quản lý kiểm đếm thực tế không được để trống.");
+        }
+
+        BigDecimal expectedBefore = shift.getExpectedCash() != null ? shift.getExpectedCash() : shift.getOpeningCash();
+        BigDecimal varFromOut = ShiftCashCalculator.calculateVariance(incomingCounted, handover.getOutgoingCountedCash());
+        BigDecimal varFromBook = ShiftCashCalculator.calculateVariance(incomingCounted, expectedBefore);
+        String managerDiscrepancyReason = request != null && StringUtils.hasText(request.discrepancyReason())
+                ? request.discrepancyReason().trim()
+                : null;
+        String approveNote = request != null && StringUtils.hasText(request.approveNote())
+                ? request.approveNote().trim()
+                : null;
+
+        if (varFromOut.compareTo(BigDecimal.ZERO) != 0 && !StringUtils.hasText(managerDiscrepancyReason)) {
+            throw new BusinessRuleException(BusinessErrorCode.REASON_REQUIRED,
+                    "Số tiền Quản lý kiểm đếm (" + incomingCounted.toPlainString()
+                            + " đ) lệch " + varFromOut.toPlainString()
+                            + " đ so với số Thu ngân bàn giao (" + handover.getOutgoingCountedCash().toPlainString()
+                            + " đ). Vui lòng nhập lý do giải trình.");
+        }
+        if (varFromBook.compareTo(BigDecimal.ZERO) != 0
+                && !StringUtils.hasText(managerDiscrepancyReason)
+                && !StringUtils.hasText(handover.getOutgoingNote())) {
+            throw new BusinessRuleException(BusinessErrorCode.REASON_REQUIRED,
+                    "Phát hiện chênh lệch tiền mặt so với sổ sách (" + varFromBook.toPlainString()
+                            + " đ). Vui lòng nhập lý do giải trình.");
+        }
+
+        BigDecimal withdrawAmount = (request != null && request.withdrawAmount() != null)
+                ? request.withdrawAmount()
+                : BigDecimal.ZERO;
+        if (withdrawAmount.compareTo(BigDecimal.ZERO) > 0 && withdrawAmount.compareTo(incomingCounted) > 0) {
+            throw new BusinessRuleException(BusinessErrorCode.INSUFFICIENT_CASH,
+                    "Số tiền rút cất két Quản lý (" + withdrawAmount.toPlainString()
+                            + " đ) không được vượt quá số tiền thực tế kiểm đếm trong két ("
+                            + incomingCounted.toPlainString() + " đ).");
+        }
+
+        Instant now = Instant.now();
+        String withdrawReason = null;
+        BigDecimal expectedAfter = expectedBefore;
+        if (withdrawAmount.compareTo(BigDecimal.ZERO) > 0) {
+            withdrawReason = (request != null && StringUtils.hasText(request.withdrawReason()))
+                    ? request.withdrawReason().trim()
+                    : "Rút tiền cất két Quản lý khi xác nhận kết ca #" + shift.getId();
+            CashTransaction withdrawTx = CashTransaction.builder()
+                    .shiftId(shift.getId())
+                    .type(CashTransactionType.CASH_OUT)
+                    .amount(withdrawAmount)
+                    .reason(truncate(withdrawReason, MAX_REASON_LEN))
+                    .createdBy(actorId)
+                    .approvedBy(actorId)
+                    .isSelfInitiated(true)
+                    .build();
+            CashTransaction savedWithdrawTx = cashTransactionRepository.save(withdrawTx);
+            expectedAfter = ShiftCashCalculator.deductCash(expectedBefore, withdrawAmount);
+
+            auditLogService.log(AuditAction.CASH_OUT, "cash_transaction", savedWithdrawTx.getId(), null,
+                    "Quản lý rút cất két khi nhận bàn giao cuối ca shiftId=" + shift.getId()
+                            + ", số tiền=" + withdrawAmount + ", lý do=" + withdrawReason);
+        }
+
+        handover.setStatus(ShiftHandoverStatus.COMPLETED);
+        handover.setToUserId(actorId);
+        handover.setIncomingCountedCash(incomingCounted);
+        handover.setIncomingVarianceFromOut(varFromOut);
+        handover.setIncomingVarianceFromBook(varFromBook);
+        handover.setIncomingNote(truncate(buildIncomingHandoverNote(managerDiscrepancyReason, approveNote), MAX_REASON_LEN));
+        handover.setIncomingAt(now);
+        handover.setIncomingConfirmedBy(actorId);
+        handover.setWithdrawAmount(withdrawAmount.compareTo(BigDecimal.ZERO) > 0 ? withdrawAmount : BigDecimal.ZERO);
+        handover.setWithdrawReason(truncate(withdrawReason, MAX_REASON_LEN));
+        shiftHandoverRepository.save(handover);
+
+        BigDecimal remainingCounted = incomingCounted.subtract(withdrawAmount);
+        BigDecimal finalVariance = ShiftCashCalculator.calculateVariance(remainingCounted, expectedAfter);
+        String finalDiscrepancyReason = StringUtils.hasText(managerDiscrepancyReason)
+                ? managerDiscrepancyReason
+                : handover.getOutgoingNote();
+
+        if (shift.isHandoverPending()) {
+            cancelPendingHandoverOnForceClose(shift.getId(), actorId, now);
+            shift.setHandoverPending(Boolean.FALSE);
+        }
+
+        shift.setManagerClosePending(Boolean.FALSE);
+        shift.setStatus(ShiftStatus.CLOSED);
+        shift.setExpectedCash(expectedAfter);
+        shift.setCountedCash(remainingCounted);
+        shift.setVariance(finalVariance);
+        shift.setDiscrepancyReason(truncate(finalDiscrepancyReason, MAX_REASON_LEN));
+        shift.setClosedBy(actorId);
+        shift.setClosedAt(now);
+        Shift savedShift = shiftRepository.save(shift);
+
+        String closeReason = "Xác nhận bàn giao két & đóng ca: Kiểm nhận=" + incomingCounted
+                + (withdrawAmount.compareTo(BigDecimal.ZERO) > 0
+                        ? ", Rút cất két QL=" + withdrawAmount + ", Lưu két=" + remainingCounted
+                        : "")
+                + ", Chênh lệch=" + finalVariance
+                + (approveNote != null ? " — " + approveNote : "");
+        CashTransaction closeTx = CashTransaction.builder()
+                .shiftId(savedShift.getId())
+                .type(CashTransactionType.CLOSE)
+                .amount(remainingCounted)
+                .reason(truncate(closeReason, MAX_REASON_LEN))
+                .createdBy(handover.getFromUserId() != null ? handover.getFromUserId() : actorId)
+                .approvedBy(actorId)
+                .isSelfInitiated(false)
+                .build();
+        cashTransactionRepository.save(closeTx);
+
+        Set<Integer> safetyCheckoutIds = new LinkedHashSet<>();
+        if (handover.getFromUserId() != null) {
+            safetyCheckoutIds.add(handover.getFromUserId());
+        }
+        if (savedShift.getActiveCashierId() != null) {
+            safetyCheckoutIds.add(savedShift.getActiveCashierId());
+        }
+        for (Integer uid : safetyCheckoutIds) {
+            autoCheckOutIfBranchStaff(uid, savedShift.getId(), now,
+                    "Tự động check-out khi Quản lý chốt đóng ca #" + savedShift.getId());
+        }
+
+        String alertNote = approveNote != null
+                ? approveNote
+                : "Quản lý đã nhận két (" + incomingCounted.toPlainString() + " đ)"
+                        + (withdrawAmount.compareTo(BigDecimal.ZERO) > 0
+                                ? ", rút cất két " + withdrawAmount.toPlainString() + " đ, lưu két " + remainingCounted.toPlainString() + " đ."
+                                : ", lưu két " + remainingCounted.toPlainString() + " đ.");
+        resolveManagerCloseAlerts(savedShift.getId(), SecurityAlertStatus.APPROVED, principal, actorId, now, alertNote);
+
+        auditLogService.log(AuditAction.SHIFT_CLOSE, "shift", savedShift.getId(), "MANAGER_CLOSE_PENDING",
+                "Quản lý xác nhận nhận két & đóng ca ID=" + savedShift.getId()
+                        + ", handoverId=" + handover.getId()
+                        + ", incomingCounted=" + incomingCounted
+                        + ", withdrawAmount=" + withdrawAmount
+                        + ", remainingCounted=" + remainingCounted
+                        + ", finalVariance=" + finalVariance);
+
+        log.info("Hoàn tất xác nhận nhận két cuối ca & đóng ca: shiftId={}, approverId={}, incomingCounted={}, withdrawAmount={}, remainingCounted={}, finalVariance={}",
+                savedShift.getId(), actorId, incomingCounted, withdrawAmount, remainingCounted, finalVariance);
+        return enrichShiftResponse(savedShift);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ShiftResponse rejectManagerClose(Integer shiftId, RejectManagerCloseRequest request, UserPrincipal principal) {
+        if (principal == null) {
+            throw new UnauthorizedException(ErrorCode.AUTH_REQUIRED);
+        }
+        Shift shift = getOpenShiftForUpdateOrThrow(shiftId);
+        if (!shift.isManagerClosePending()) {
+            throw new BusinessRuleException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Ca #" + shift.getId() + " hiện không ở trạng thái chờ Quản lý xác nhận nhận két cuối ca.");
+        }
+
+        ShiftHandover handover = shiftHandoverRepository
+                .findFirstByShiftIdAndStatusAndHandoverTypeOrderByIdDesc(
+                        shift.getId(), ShiftHandoverStatus.PENDING_RECEIVE, ShiftHandoverType.MANAGER_CLOSE)
+                .orElseThrow(() -> new BusinessRuleException(ErrorCode.INVALID_STATE_TRANSITION,
+                        "Không tìm thấy phiếu bàn giao két cuối ca đang chờ xác nhận."));
+
+        Integer actorId = resolveActorId(principal);
+        Instant now = Instant.now();
+        String rejectReason = request != null && StringUtils.hasText(request.reason())
+                ? request.reason().trim()
+                : "Quản lý chi nhánh trả lại ca — mở lại quầy POS để kiểm tra thêm";
+
+        handover.setStatus(ShiftHandoverStatus.CANCELLED);
+        handover.setCancelledAt(now);
+        handover.setCancelledBy(actorId);
+        handover.setCancelReason(truncate(rejectReason, MAX_REASON_LEN));
+        shiftHandoverRepository.save(handover);
+
+        shift.setManagerClosePending(Boolean.FALSE);
+        Shift savedShift = shiftRepository.save(shift);
+
+        resolveManagerCloseAlerts(savedShift.getId(), SecurityAlertStatus.REJECTED, principal, actorId, now, rejectReason);
+
+        auditLogService.log(AuditAction.SHIFT_OPEN, "shift", savedShift.getId(), "MANAGER_CLOSE_PENDING",
+                "Quản lý trả lại ca chờ nhận két shiftId=" + savedShift.getId()
+                        + ", handoverId=" + handover.getId() + ", lý do=" + rejectReason);
+
+        log.info("Đã trả lại ca chờ nhận két & mở lại POS: shiftId={}, actorId={}", savedShift.getId(), actorId);
+        return enrichShiftResponse(savedShift);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public PreOpenCashAdjustmentResponse preOpenCashIn(PreOpenCashInRequest request, UserPrincipal principal) {
+        ensureCanAdjustCash(principal);
+        Integer branchId = BranchContext.resolveBranchScope(request.branchId());
+        if (!branchRepository.existsById(branchId)) {
+            throw new NotFoundException("chi nhánh");
+        }
+        if (shiftRepository.existsByBranchIdAndStatus(branchId, ShiftStatus.OPEN)) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_ALREADY_OPEN,
+                    "Chi nhánh hiện đang có ca mở. Vui lòng dùng chức năng Nạp tiền trong ca thay vì Nạp đầu ngày.");
+        }
+
+        User approver = resolveCashAdjustmentApprover(branchId, request.managerPin(), principal);
+        Integer actorId = resolveActorId(principal);
+
+        PreOpenCashAdjustment adj = PreOpenCashAdjustment.builder()
+                .branchId(branchId)
+                .amount(request.amount())
+                .reason(truncate(request.reason().trim(), MAX_REASON_LEN))
+                .createdBy(actorId != null ? actorId : approver.getId())
+                .approvedBy(approver.getId())
+                .build();
+        PreOpenCashAdjustment saved = preOpenCashAdjustmentRepository.save(adj);
+
+        auditLogService.log(AuditAction.CASH_IN, "pre_open_cash_adjustment", saved.getId(), null,
+                "Nạp tiền đầu ngày trước mở ca branchId=" + branchId
+                        + ", amount=" + saved.getAmount() + ", lý do=" + saved.getReason());
+
+        log.info("Nạp tiền đầu ngày trước mở ca: id={}, branchId={}, amount={}, actorId={}",
+                saved.getId(), branchId, saved.getAmount(), actorId);
+        return toPreOpenCashAdjustmentResponses(List.of(saved)).get(0);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public PreOpenCashAdjustmentResponse cancelPreOpenCashIn(Integer adjustmentId, String reason, UserPrincipal principal) {
+        ensureCanAdjustCash(principal);
+        PreOpenCashAdjustment adj = preOpenCashAdjustmentRepository.findByIdForUpdate(adjustmentId)
+                .orElseThrow(() -> new NotFoundException("khoản nạp tiền đầu ngày"));
+        BranchContext.resolveBranchScope(adj.getBranchId());
+
+        if (adj.getAppliedShiftId() != null) {
+            throw new BusinessRuleException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Khoản nạp tiền đầu ngày đã được ghi nhận vào ca #" + adj.getAppliedShiftId() + ", không thể hủy.");
+        }
+        if (adj.getCancelledAt() != null) {
+            throw new BusinessRuleException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Khoản nạp tiền đầu ngày này đã được hủy trước đó.");
+        }
+
+        Integer actorId = resolveActorId(principal);
+        String cancelReason = StringUtils.hasText(reason) ? reason.trim() : "Quản lý hủy khoản nạp đầu ngày";
+        adj.setCancelledAt(Instant.now());
+        adj.setCancelledBy(actorId);
+        adj.setCancelReason(truncate(cancelReason, MAX_REASON_LEN));
+        PreOpenCashAdjustment saved = preOpenCashAdjustmentRepository.save(adj);
+
+        auditLogService.log(AuditAction.CASH_IN, "pre_open_cash_adjustment", saved.getId(), "PENDING",
+                "Hủy khoản nạp đầu ngày ID=" + saved.getId() + ", branchId=" + saved.getBranchId() + ", lý do=" + cancelReason);
+
+        log.info("Đã hủy khoản nạp tiền đầu ngày: id={}, branchId={}, actorId={}", saved.getId(), saved.getBranchId(), actorId);
+        return toPreOpenCashAdjustmentResponses(List.of(saved)).get(0);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public CashTransactionResponse postCloseCashOut(PostCloseCashOutRequest request, UserPrincipal principal) {
+        ensureCanAdjustCash(principal);
+        Integer branchId = BranchContext.resolveBranchScope(request.branchId());
+        if (!branchRepository.existsById(branchId)) {
+            throw new NotFoundException("chi nhánh");
+        }
+        if (shiftRepository.existsByBranchIdAndStatus(branchId, ShiftStatus.OPEN)) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_ALREADY_OPEN,
+                    "Chi nhánh hiện đang có ca mở. Vui lòng rút tiền trực tiếp trong ca đang mở.");
+        }
+
+        Shift latestClosed = shiftRepository
+                .findFirstByBranchIdAndStatusOrderByClosedAtDescIdDesc(branchId, ShiftStatus.CLOSED)
+                .flatMap(s -> shiftRepository.findByIdForUpdate(s.getId()))
+                .orElseThrow(() -> new BusinessRuleException(BusinessErrorCode.SHIFT_CLOSED,
+                        "Chi nhánh chưa có ca nào đã đóng để rút tiền sau kết ca."));
+
+        if (shiftRepository.existsByBranchIdAndStatus(branchId, ShiftStatus.OPEN)) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_ALREADY_OPEN,
+                    "Chi nhánh hiện đang có ca mở. Vui lòng rút tiền trực tiếp trong ca đang mở.");
+        }
+        if (latestClosed.getStatus() != ShiftStatus.CLOSED) {
+            throw new BusinessRuleException(ErrorCode.INVALID_STATE_TRANSITION,
+                    "Ca #" + latestClosed.getId() + " không còn ở trạng thái Đã đóng.");
+        }
+
+        User manager = resolveCashAdjustmentApprover(branchId, request.managerPin(), principal);
+        Integer actorId = resolveActorId(principal);
+        boolean isSelf = principal != null && principal.userId().equals(manager.getId());
+
+        BigDecimal availableInDrawer = resolvePreviousClosingCash(latestClosed);
+        if (!ShiftCashCalculator.isSufficientCash(availableInDrawer, request.amount())) {
+            throw new BusinessRuleException(BusinessErrorCode.INSUFFICIENT_CASH,
+                    "Số tiền lưu két sau kết ca #" + latestClosed.getId() + " ("
+                            + (availableInDrawer != null ? availableInDrawer.toPlainString() : "0")
+                            + " đ) không đủ để rút " + request.amount().toPlainString() + " đ.");
+        }
+
+        CashTransaction tx = CashTransaction.builder()
+                .shiftId(latestClosed.getId())
+                .type(CashTransactionType.CASH_OUT)
+                .amount(request.amount())
+                .reason(truncate("[Rút sau kết ca] " + request.reason().trim(), MAX_REASON_LEN))
+                .createdBy(actorId != null ? actorId : manager.getId())
+                .approvedBy(manager.getId())
+                .isSelfInitiated(isSelf)
+                .build();
+        CashTransaction savedTx = cashTransactionRepository.save(tx);
+
+        BigDecimal prevExpected = latestClosed.getExpectedCash() != null
+                ? latestClosed.getExpectedCash()
+                : (latestClosed.getOpeningCash() != null ? latestClosed.getOpeningCash() : BigDecimal.ZERO);
+        BigDecimal newExpected = ShiftCashCalculator.deductCash(prevExpected, request.amount());
+        BigDecimal newCounted = ShiftCashCalculator.deductCash(availableInDrawer, request.amount());
+        BigDecimal preservedVariance = ShiftCashCalculator.calculateVariance(newCounted, newExpected);
+
+        latestClosed.setExpectedCash(newExpected);
+        latestClosed.setCountedCash(newCounted);
+        latestClosed.setVariance(preservedVariance);
+        shiftRepository.save(latestClosed);
+
+        auditLogService.log(AuditAction.CASH_OUT, "cash_transaction", savedTx.getId(), null,
+                "Rút tiền sau kết ca shiftId=" + latestClosed.getId()
+                        + ", amount=" + request.amount()
+                        + ", remainingClosingCash=" + newCounted
+                        + ", lý do=" + request.reason().trim());
+
+        log.info("Rút tiền sau kết ca thành công: shiftId={}, amount={}, newCounted={}, managerId={}",
+                latestClosed.getId(), request.amount(), newCounted, manager.getId());
+        return enrichCashTransactionResponse(savedTx);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public ShiftSummaryResponse getCurrentShiftSummary(Integer requestedBranchId) {
         Integer branchId = BranchContext.resolveBranchScope(requestedBranchId);
@@ -885,26 +1412,44 @@ public class ShiftServiceImpl implements ShiftService {
             throw new NotFoundException("chi nhánh");
         }
 
-        return shiftRepository.findFirstByBranchIdAndStatusOrderByClosedAtDescIdDesc(branchId, ShiftStatus.CLOSED)
-                .map(prev -> {
-                    String closedByName = prev.getClosedBy() != null
-                            ? loadUserNameMap(List.of(prev.getClosedBy())).get(prev.getClosedBy())
-                            : null;
-                    BigDecimal closingCash = resolvePreviousClosingCash(prev);
-                    return new PreviousShiftSummaryResponse(
-                            true,
-                            prev.getId(),
-                            prev.getShiftDate(),
-                            prev.getShiftType(),
-                            prev.getClosedAt(),
-                            prev.getClosedBy(),
-                            closedByName,
-                            prev.getExpectedCash(),
-                            closingCash,
-                            prev.getVariance()
-                    );
-                })
-                .orElseGet(PreviousShiftSummaryResponse::none);
+        List<PreOpenCashAdjustment> pendingPreOpen = preOpenCashAdjustmentRepository
+                .findPendingByBranchIdOrderByCreatedAtAsc(branchId);
+        BigDecimal preOpenTotal = pendingPreOpen.stream()
+                .map(PreOpenCashAdjustment::getAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        List<PreOpenCashAdjustmentResponse> preOpenDtos = toPreOpenCashAdjustmentResponses(pendingPreOpen);
+
+        Shift prev = shiftRepository.findFirstByBranchIdAndStatusOrderByClosedAtDescIdDesc(branchId, ShiftStatus.CLOSED)
+                .orElse(null);
+        if (prev == null) {
+            if (preOpenTotal.compareTo(BigDecimal.ZERO) > 0) {
+                return new PreviousShiftSummaryResponse(
+                        false, null, null, null, null, null, null, null, null, null,
+                        preOpenTotal, preOpenTotal, preOpenDtos);
+            }
+            return PreviousShiftSummaryResponse.none();
+        }
+
+        String closedByName = prev.getClosedBy() != null
+                ? loadUserNameMap(List.of(prev.getClosedBy())).get(prev.getClosedBy())
+                : null;
+        BigDecimal closingCash = resolvePreviousClosingCash(prev);
+        BigDecimal expectedOpeningCash = (closingCash != null ? closingCash : BigDecimal.ZERO).add(preOpenTotal);
+        return new PreviousShiftSummaryResponse(
+                true,
+                prev.getId(),
+                prev.getShiftDate(),
+                prev.getShiftType(),
+                prev.getClosedAt(),
+                prev.getClosedBy(),
+                closedByName,
+                prev.getExpectedCash(),
+                closingCash,
+                prev.getVariance(),
+                preOpenTotal,
+                expectedOpeningCash,
+                preOpenDtos
+        );
     }
 
     @Override
@@ -972,7 +1517,9 @@ public class ShiftServiceImpl implements ShiftService {
                     activeCashierId,
                     activeCashierId != null ? userNames.get(activeCashierId) : null,
                     open != null && open.isHandoverPending(),
-                    open != null && open.isEarlyClosePending()
+                    open != null && open.isEarlyClosePending(),
+                    open != null && open.isManagerClosePending(),
+                    open != null ? resolvePreOpenCashIn(open) : null
             );
         }).toList();
     }
@@ -1318,7 +1865,9 @@ public class ShiftServiceImpl implements ShiftService {
     }
 
     private void populateOpeningFields(Shift shift,
-                                       BigDecimal openingCash,
+                                       BigDecimal baseOpeningCash,
+                                       BigDecimal initialExpectedCash,
+                                       BigDecimal preOpenCashIn,
                                        Integer actorId,
                                        Instant now,
                                        Integer previousShiftId,
@@ -1330,8 +1879,10 @@ public class ShiftServiceImpl implements ShiftService {
         shift.setActiveCashierId(actorId);
         shift.setHandoverPending(Boolean.FALSE);
         shift.setEarlyClosePending(Boolean.FALSE);
-        shift.setOpeningCash(openingCash);
-        shift.setExpectedCash(openingCash);
+        shift.setManagerClosePending(Boolean.FALSE);
+        shift.setOpeningCash(baseOpeningCash);
+        shift.setPreOpenCashIn(preOpenCashIn != null ? preOpenCashIn : BigDecimal.ZERO);
+        shift.setExpectedCash(initialExpectedCash);
         shift.setCashRevenue(BigDecimal.ZERO);
         shift.setTransferRevenue(BigDecimal.ZERO);
         shift.setPreviousShiftId(previousShiftId);
@@ -1341,15 +1892,28 @@ public class ShiftServiceImpl implements ShiftService {
     }
 
     private void recordOpeningCashTransaction(Integer shiftId,
-                                              BigDecimal openingCash,
+                                              BigDecimal baseOpeningCash,
+                                              BigDecimal preOpenTotal,
                                               String note,
                                               BigDecimal previousClosingCash,
                                               BigDecimal openingVariance,
                                               Integer actorId) {
         String reason;
-        if (previousClosingCash != null && openingVariance != null && openingVariance.compareTo(BigDecimal.ZERO) != 0) {
+        boolean hasPreOpen = preOpenTotal != null && preOpenTotal.compareTo(BigDecimal.ZERO) > 0;
+        if (openingVariance != null && openingVariance.compareTo(BigDecimal.ZERO) != 0) {
+            String baselineDesc = hasPreOpen
+                    ? ((previousClosingCash != null ? "kết ca trước " + previousClosingCash.toPlainString() + " đ + " : "")
+                            + "nạp đầu ngày " + preOpenTotal.toPlainString() + " đ")
+                    : ("kết ca trước (" + (previousClosingCash != null ? previousClosingCash.toPlainString() : "0") + " đ)");
             reason = "Đối soát đầu ca lệch " + openingVariance.toPlainString()
-                    + " đ so với kết ca trước (" + previousClosingCash.toPlainString() + " đ): " + note;
+                    + " đ so với " + baselineDesc + ": " + note;
+        } else if (hasPreOpen) {
+            reason = StringUtils.hasText(note)
+                    ? note
+                    : (previousClosingCash != null
+                            ? "Mở ca & khớp két đầu ngày (Kết ca trước " + previousClosingCash.toPlainString()
+                                    + " đ + Nạp đầu ngày " + preOpenTotal.toPlainString() + " đ)"
+                            : "Mở ca & khớp tiền Quản lý nạp đầu ngày (" + preOpenTotal.toPlainString() + " đ)");
         } else if (previousClosingCash != null) {
             reason = StringUtils.hasText(note)
                     ? note
@@ -1361,7 +1925,7 @@ public class ShiftServiceImpl implements ShiftService {
         CashTransaction openTx = CashTransaction.builder()
                 .shiftId(shiftId)
                 .type(CashTransactionType.OPEN)
-                .amount(openingCash)
+                .amount(baseOpeningCash)
                 .reason(truncate(reason, MAX_REASON_LEN))
                 .createdBy(actorId)
                 .isSelfInitiated(false)
@@ -1455,7 +2019,7 @@ public class ShiftServiceImpl implements ShiftService {
             if (s.getEarlyCloseRequestedBy() != null) {
                 userIds.add(s.getEarlyCloseRequestedBy());
             }
-            if (s.isHandoverPending() && s.getId() != null) {
+            if ((s.isHandoverPending() || s.isManagerClosePending()) && s.getId() != null) {
                 pendingShiftIds.add(s.getId());
             }
         }
@@ -1516,7 +2080,9 @@ public class ShiftServiceImpl implements ShiftService {
                     s.getEarlyCloseCountedCash(),
                     s.getEarlyCloseVariance(),
                     s.getEarlyCloseDiscrepancyReason(),
-                    s.getEarlyCloseReason()
+                    s.getEarlyCloseReason(),
+                    s.isManagerClosePending(),
+                    resolvePreOpenCashIn(s)
             );
         }).toList();
     }
@@ -1561,6 +2127,7 @@ public class ShiftServiceImpl implements ShiftService {
                 h.getFromUserId() != null ? userNames.get(h.getFromUserId()) : null,
                 base.toUserId(),
                 h.getToUserId() != null ? userNames.get(h.getToUserId()) : null,
+                base.handoverType(),
                 base.status(),
                 base.reason(),
                 base.expectedCashAtOut(),
@@ -1577,6 +2144,8 @@ public class ShiftServiceImpl implements ShiftService {
                 base.incomingAt(),
                 base.incomingConfirmedBy(),
                 h.getIncomingConfirmedBy() != null ? userNames.get(h.getIncomingConfirmedBy()) : null,
+                base.withdrawAmount(),
+                base.withdrawReason(),
                 base.cancelledAt(),
                 base.cancelledBy(),
                 h.getCancelledBy() != null ? userNames.get(h.getCancelledBy()) : null,
@@ -2019,6 +2588,130 @@ public class ShiftServiceImpl implements ShiftService {
             alert.setResolveNote(truncate(note, 255));
         }
         securityAlertRepository.saveAll(alerts);
+    }
+
+    private void createManagerCloseAlert(
+            Shift shift,
+            Integer cashierId,
+            String cashierName,
+            BigDecimal counted,
+            BigDecimal expected,
+            BigDecimal variance,
+            String handoverReason,
+            String discrepancyReason,
+            boolean earlyClose) {
+        String branchName = branchRepository.findById(shift.getBranchId())
+                .map(Branch::getName)
+                .orElse("Chi nhánh #" + shift.getBranchId());
+        String shiftLabel = shiftTypeLabel(shift.getShiftType()) + " #" + shift.getId();
+        boolean hasVariance = variance != null && variance.compareTo(BigDecimal.ZERO) != 0;
+
+        String title = "Bàn giao két cuối ca · " + shiftLabel + " · " + cashierName;
+        StringBuilder msg = new StringBuilder();
+        msg.append(cashierName)
+                .append(" đã kiểm két cuối ca (").append(shiftLabel).append(" tại ").append(branchName)
+                .append(earlyClose ? ", đóng sớm so với giờ kết thúc" : "")
+                .append(") và tự check-out, chờ Quản lý xác nhận nhận tiền & đóng ca. ")
+                .append("Số tiền bàn giao: ").append(counted != null ? counted.toPlainString() : "0").append(" đ")
+                .append(" (sổ sách ").append(expected != null ? expected.toPlainString() : "0").append(" đ");
+        if (hasVariance) {
+            msg.append(", lệch ").append(variance.toPlainString()).append(" đ");
+            if (StringUtils.hasText(discrepancyReason)) {
+                msg.append(" — ").append(discrepancyReason);
+            }
+        }
+        msg.append(").");
+        if (StringUtils.hasText(handoverReason)) {
+            msg.append(" Ghi chú: ").append(handoverReason);
+        }
+
+        SecurityAlert alert = SecurityAlert.builder()
+                .branchId(shift.getBranchId())
+                .branchName(branchName)
+                .alertType(SecurityAlertType.MANAGER_SHIFT_CLOSE_REQUEST)
+                .severity(SecurityAlertSeverity.HIGH)
+                .status(SecurityAlertStatus.ACTIVE)
+                .targetUserId(cashierId)
+                .targetUserName(cashierName)
+                .targetRole(Roles.CASHIER.code())
+                .failureCount(0)
+                .referenceShiftId(shift.getId())
+                .title(truncate(title, 200))
+                .message(truncate(msg.toString(), 500))
+                .build();
+        securityAlertRepository.save(alert);
+    }
+
+    private void resolveManagerCloseAlerts(
+            Integer shiftId,
+            SecurityAlertStatus finalStatus,
+            UserPrincipal actor,
+            Integer actorId,
+            Instant now,
+            String note) {
+        if (shiftId == null) {
+            return;
+        }
+        List<SecurityAlert> alerts = securityAlertRepository.findByReferenceShiftIdAndAlertTypeAndStatusIn(
+                shiftId,
+                SecurityAlertType.MANAGER_SHIFT_CLOSE_REQUEST,
+                List.of(SecurityAlertStatus.ACTIVE, SecurityAlertStatus.ACKNOWLEDGED));
+        if (alerts.isEmpty()) {
+            return;
+        }
+        String resolverName = resolveActorDisplayName(null, actor, actorId);
+        for (SecurityAlert alert : alerts) {
+            alert.setStatus(finalStatus);
+            alert.setResolvedBy(actorId);
+            alert.setResolvedByName(resolverName);
+            alert.setResolvedAt(now);
+            alert.setResolveNote(truncate(note, 255));
+        }
+        securityAlertRepository.saveAll(alerts);
+    }
+
+    private List<PreOpenCashAdjustmentResponse> toPreOpenCashAdjustmentResponses(List<PreOpenCashAdjustment> list) {
+        if (list == null || list.isEmpty()) {
+            return List.of();
+        }
+        Set<Integer> userIds = new HashSet<>();
+        for (PreOpenCashAdjustment adj : list) {
+            if (adj.getCreatedBy() != null) {
+                userIds.add(adj.getCreatedBy());
+            }
+            if (adj.getApprovedBy() != null) {
+                userIds.add(adj.getApprovedBy());
+            }
+        }
+        Map<Integer, String> userNames = loadUserNameMap(userIds);
+        return list.stream().map(adj -> new PreOpenCashAdjustmentResponse(
+                adj.getId(),
+                adj.getBranchId(),
+                adj.getAmount(),
+                adj.getReason(),
+                adj.getCreatedBy(),
+                adj.getCreatedBy() != null ? userNames.get(adj.getCreatedBy()) : null,
+                adj.getApprovedBy(),
+                adj.getApprovedBy() != null ? userNames.get(adj.getApprovedBy()) : null,
+                adj.getAppliedShiftId(),
+                adj.getAppliedAt(),
+                adj.getCancelledAt(),
+                adj.getCreatedAt()
+        )).toList();
+    }
+
+    private static BigDecimal resolvePreOpenCashIn(Shift shift) {
+        return shift != null && shift.getPreOpenCashIn() != null ? shift.getPreOpenCashIn() : BigDecimal.ZERO;
+    }
+
+    private static String buildIncomingHandoverNote(String discrepancyReason, String approveNote) {
+        if (StringUtils.hasText(discrepancyReason) && StringUtils.hasText(approveNote)) {
+            return discrepancyReason + " — " + approveNote;
+        }
+        if (StringUtils.hasText(discrepancyReason)) {
+            return discrepancyReason;
+        }
+        return StringUtils.hasText(approveNote) ? approveNote : null;
     }
 
     private String resolveActorDisplayName(User loadedUser, UserPrincipal principal, Integer actorId) {

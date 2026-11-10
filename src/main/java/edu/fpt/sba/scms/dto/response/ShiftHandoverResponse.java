@@ -1,12 +1,13 @@
 package edu.fpt.sba.scms.dto.response;
 
 import edu.fpt.sba.scms.common.enums.ShiftHandoverStatus;
+import edu.fpt.sba.scms.common.enums.ShiftHandoverType;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 
-@Schema(name = "ShiftHandoverResponse", description = "Chi tiết biên bản bàn giao két giữa ca")
+@Schema(name = "ShiftHandoverResponse", description = "Chi tiết biên bản bàn giao két (giữa ca hoặc cuối ca cho Quản lý)")
 public record ShiftHandoverResponse(
         Integer id,
         Integer shiftId,
@@ -15,6 +16,7 @@ public record ShiftHandoverResponse(
         String fromUserName,
         Integer toUserId,
         String toUserName,
+        ShiftHandoverType handoverType,
         ShiftHandoverStatus status,
         String reason,
         BigDecimal expectedCashAtOut,
@@ -31,6 +33,8 @@ public record ShiftHandoverResponse(
         Instant incomingAt,
         Integer incomingConfirmedBy,
         String incomingConfirmedByName,
+        BigDecimal withdrawAmount,
+        String withdrawReason,
         Instant cancelledAt,
         Integer cancelledBy,
         String cancelledByName,

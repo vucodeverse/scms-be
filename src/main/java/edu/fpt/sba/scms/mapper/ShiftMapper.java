@@ -24,6 +24,8 @@ public interface ShiftMapper {
     @Mapping(target = "pendingHandover", ignore = true)
     @Mapping(target = "handoverPending", expression = "java(shift.isHandoverPending())")
     @Mapping(target = "earlyClosePending", expression = "java(shift.isEarlyClosePending())")
+    @Mapping(target = "managerClosePending", expression = "java(shift.isManagerClosePending())")
+    @Mapping(target = "preOpenCashIn", expression = "java(shift.getPreOpenCashIn() != null ? shift.getPreOpenCashIn() : java.math.BigDecimal.ZERO)")
     @Mapping(target = "earlyCloseRequestedByName", ignore = true)
     ShiftResponse toShiftResponse(Shift shift);
 
@@ -44,6 +46,7 @@ public interface ShiftMapper {
             Map<Integer, String> employeeRoles,
             List<Integer> replacementEmployeeIds);
 
+    @Mapping(target = "handoverType", expression = "java(handover.effectiveHandoverType())")
     @Mapping(target = "fromUserName", ignore = true)
     @Mapping(target = "toUserName", ignore = true)
     @Mapping(target = "outgoingConfirmedByName", ignore = true)

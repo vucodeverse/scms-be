@@ -25,13 +25,24 @@ public record CloseShiftRequest(
 
         @Schema(description = "Lý do đóng ca sớm hơn 10 phút so với giờ dự kiến kết thúc (tùy chọn)", example = "Chi nhánh mất điện, xin đóng ca sớm")
         @Size(max = 500, message = "Lý do đóng ca sớm tối đa 500 ký tự")
-        String earlyCloseReason
+        String earlyCloseReason,
+
+        @Schema(description = "Thu ngân gửi bàn giao két cuối ca cho Quản lý chi nhánh xác nhận nhận tiền & đóng ca (tùy chọn rút cất két)", example = "true")
+        Boolean handoverToManager,
+
+        @Schema(description = "Ghi chú bàn giao két cuối ca cho Quản lý (tùy chọn)", example = "Bàn giao két cuối ngày, nhờ sếp kiểm nhận")
+        @Size(max = 500, message = "Ghi chú bàn giao tối đa 500 ký tự")
+        String handoverReason
 ) {
     public CloseShiftRequest(BigDecimal countedCash, String discrepancyReason) {
-        this(countedCash, discrepancyReason, null, null);
+        this(countedCash, discrepancyReason, null, null, null, null);
     }
 
     public CloseShiftRequest(BigDecimal countedCash, String discrepancyReason, String pin) {
-        this(countedCash, discrepancyReason, pin, null);
+        this(countedCash, discrepancyReason, pin, null, null, null);
+    }
+
+    public CloseShiftRequest(BigDecimal countedCash, String discrepancyReason, String pin, String earlyCloseReason) {
+        this(countedCash, discrepancyReason, pin, earlyCloseReason, null, null);
     }
 }

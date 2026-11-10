@@ -90,6 +90,11 @@ public class RefundServiceImpl implements RefundService {
                     "Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca #" + openShift.getId()
                             + ". Vui lòng hoàn tất kiểm két nhận ca trước khi chi hoàn tiền.");
         }
+        if (openShift.isManagerClosePending()) {
+            throw new BusinessRuleException(BusinessErrorCode.SHIFT_MANAGER_CLOSE_PENDING,
+                    "Ca #" + openShift.getId()
+                            + " đã chốt kiểm két cuối ca và đang chờ Quản lý chi nhánh xác nhận nhận tiền / đóng ca. Quầy POS tạm khóa cho đến khi Quản lý xử lý.");
+        }
         if (openShift.isEarlyClosePending()) {
             throw new BusinessRuleException(BusinessErrorCode.SHIFT_EARLY_CLOSE_PENDING,
                     "Ca #" + openShift.getId()

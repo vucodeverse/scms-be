@@ -140,6 +140,13 @@ public class Shift {
     @Column(name = "early_close_reason", length = 500)
     private String earlyCloseReason;
 
+    @Column(name = "manager_close_pending")
+    private Boolean managerClosePending;
+
+    @Column(name = "pre_open_cash_in", precision = 19, scale = 2)
+    @Builder.Default
+    private BigDecimal preOpenCashIn = BigDecimal.ZERO;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     private ShiftStatus status;
@@ -178,6 +185,12 @@ public class Shift {
         if (earlyClosePending == null) {
             earlyClosePending = Boolean.FALSE;
         }
+        if (managerClosePending == null) {
+            managerClosePending = Boolean.FALSE;
+        }
+        if (preOpenCashIn == null) {
+            preOpenCashIn = BigDecimal.ZERO;
+        }
     }
 
     @PreUpdate
@@ -195,5 +208,9 @@ public class Shift {
 
     public boolean isEarlyClosePending() {
         return Boolean.TRUE.equals(earlyClosePending);
+    }
+
+    public boolean isManagerClosePending() {
+        return Boolean.TRUE.equals(managerClosePending);
     }
 }

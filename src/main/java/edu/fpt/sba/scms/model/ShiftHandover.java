@@ -1,6 +1,7 @@
 package edu.fpt.sba.scms.model;
 
 import edu.fpt.sba.scms.common.enums.ShiftHandoverStatus;
+import edu.fpt.sba.scms.common.enums.ShiftHandoverType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -50,6 +51,10 @@ public class ShiftHandover {
     private Integer toUserId;
 
     @Enumerated(EnumType.STRING)
+    @Column(name = "handover_type", length = 30)
+    private ShiftHandoverType handoverType;
+
+    @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 30)
     private ShiftHandoverStatus status;
 
@@ -92,6 +97,12 @@ public class ShiftHandover {
     @Column(name = "incoming_confirmed_by")
     private Integer incomingConfirmedBy;
 
+    @Column(name = "withdraw_amount", precision = 19, scale = 2)
+    private BigDecimal withdrawAmount;
+
+    @Column(name = "withdraw_reason", length = 500)
+    private String withdrawReason;
+
     @Column(name = "cancelled_at")
     private Instant cancelledAt;
 
@@ -116,5 +127,16 @@ public class ShiftHandover {
         if (status == null) {
             status = ShiftHandoverStatus.PENDING_RECEIVE;
         }
+        if (handoverType == null) {
+            handoverType = ShiftHandoverType.MID_SHIFT;
+        }
+    }
+
+    public boolean isManagerClose() {
+        return handoverType == ShiftHandoverType.MANAGER_CLOSE;
+    }
+
+    public ShiftHandoverType effectiveHandoverType() {
+        return handoverType != null ? handoverType : ShiftHandoverType.MID_SHIFT;
     }
 }

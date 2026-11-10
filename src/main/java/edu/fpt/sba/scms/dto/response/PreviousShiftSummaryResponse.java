@@ -6,8 +6,9 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.List;
 
-@Schema(name = "PreviousShiftSummaryResponse", description = "Thông tin ca đã đóng gần nhất của chi nhánh để đối soát két đầu ca")
+@Schema(name = "PreviousShiftSummaryResponse", description = "Thông tin ca đã đóng gần nhất và các khoản nạp đầu ngày của chi nhánh để đối soát két đầu ca")
 public record PreviousShiftSummaryResponse(
         boolean hasPreviousShift,
         Integer shiftId,
@@ -18,9 +19,14 @@ public record PreviousShiftSummaryResponse(
         String closedByName,
         BigDecimal expectedCash,
         BigDecimal countedCash,
-        BigDecimal variance
+        BigDecimal variance,
+        BigDecimal preOpenCashIn,
+        BigDecimal expectedOpeningCash,
+        List<PreOpenCashAdjustmentResponse> preOpenAdjustments
 ) {
     public static PreviousShiftSummaryResponse none() {
-        return new PreviousShiftSummaryResponse(false, null, null, null, null, null, null, null, null, null);
+        return new PreviousShiftSummaryResponse(
+                false, null, null, null, null, null, null, null, null, null,
+                BigDecimal.ZERO, null, List.of());
     }
 }

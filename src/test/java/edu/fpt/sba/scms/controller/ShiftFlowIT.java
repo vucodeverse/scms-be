@@ -51,6 +51,7 @@ import static org.hamcrest.Matchers.hasSize;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -2175,5 +2176,423 @@ public class ShiftFlowIT {
                 .andExpect(jsonPath("$.data.earlyClosePending").value(false));
 
         assertTrue(attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(cashierId).isEmpty());
+    }
+
+    @Test
+    @DisplayName("Bàn giao két cuối ca cho Quản lý: Check-out ngay, khóa POS/PIN, trả lại ca, duyệt kèm rút cất két & giữ nguyên chênh lệch trên CashFlow")
+    void testManagerCloseHandoverImmediateCheckOutWithdrawAndVariancePreservation() throws Exception {
+        int schedId = scheduleCashierForCurrentWindow(testBranchId, cashierId);
+
+        MvcResult pinLoginRes = mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"employeeId\":%d,\"pin\":\"%s\"}"
+                                .formatted(testBranchId, cashierId, CASHIER_PIN)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String cashierToken = com.jayway.jsonpath.JsonPath.read(pinLoginRes.getResponse().getContentAsString(), "$.data.accessToken");
+
+        // Mở ca với 1.000.000 đ -> auto Check-in Thu ngân
+        MvcResult openRes = mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":1000000}"
+                                .formatted(testBranchId, schedId)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        int shiftId = com.jayway.jsonpath.JsonPath.read(openRes.getResponse().getContentAsString(), "$.data.id");
+        assertTrue(attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(cashierId).isPresent());
+
+        // Tạo 1 đơn tiền mặt 4.000.000 đ (expectedCash = 5.000.000 đ) + 1 đơn PENDING để test khóa thanh toán
+        MvcResult paidOrderRes = mockMvc.perform(post("/api/v1/payments/orders")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"totalAmount\":4000000,\"discountAmount\":0,\"finalAmount\":4000000,\"note\":\"Đơn test 4tr\"}"
+                                .formatted(testBranchId)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        int paidOrderId = com.jayway.jsonpath.JsonPath.read(paidOrderRes.getResponse().getContentAsString(), "$.data.orderId");
+        mockMvc.perform(post("/api/v1/payments/cash")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"orderId\":%d,\"cashReceived\":4000000}".formatted(paidOrderId)))
+                .andExpect(status().isOk());
+
+        MvcResult pendingOrderRes = mockMvc.perform(post("/api/v1/payments/orders")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"totalAmount\":50000,\"discountAmount\":0,\"finalAmount\":50000,\"note\":\"Đơn chờ thanh toán\"}"
+                                .formatted(testBranchId)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        int pendingOrderId = com.jayway.jsonpath.JsonPath.read(pendingOrderRes.getResponse().getContentAsString(), "$.data.orderId");
+
+        // 1. Gửi handoverToManager=true nhưng thiếu PIN -> 401 INVALID_PIN
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":5000000,\"handoverToManager\":true}"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value("INVALID_PIN"));
+
+        // BM tự gửi handoverToManager=true -> bị chặn INVALID_STATE_TRANSITION
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":5000000,\"handoverToManager\":true}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("INVALID_STATE_TRANSITION"));
+
+        // 2. Thu ngân đóng ca & bàn giao két cho Quản lý (5.000.000 đ) -> Check-out NGAY, OPEN + managerClosePending=true
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "countedCash": 5000000,
+                                    "pin": "%s",
+                                    "handoverToManager": true,
+                                    "handoverReason": "Đóng ca cuối ngày, bàn giao két nhờ Quản lý cất bớt tiền"
+                                }
+                                """.formatted(CASHIER_PIN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("OPEN"))
+                .andExpect(jsonPath("$.data.managerClosePending").value(true))
+                .andExpect(jsonPath("$.data.earlyClosePending").value(false))
+                .andExpect(jsonPath("$.data.pendingHandover.handoverType").value("MANAGER_CLOSE"))
+                .andExpect(jsonPath("$.data.pendingHandover.status").value("PENDING_RECEIVE"))
+                .andExpect(jsonPath("$.data.pendingHandover.outgoingCountedCash").value(5000000));
+
+        assertTrue(attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(cashierId).isEmpty(),
+                "Thu ngân phải được tự động Check-out ngay khi gửi bàn giao két cuối ca cho Quản lý");
+        assertEquals(AttendanceStatus.COMPLETED, attendanceRepository.findAllByUserIdOrderByCheckInTimeDesc(cashierId).get(0).getStatus());
+
+        // Kiểm tra SecurityAlert MANAGER_SHIFT_CLOSE_REQUEST & overview
+        var mgrAlerts = securityAlertRepository.findByReferenceShiftIdAndAlertTypeAndStatusIn(
+                shiftId, SecurityAlertType.MANAGER_SHIFT_CLOSE_REQUEST, java.util.List.of(SecurityAlertStatus.ACTIVE));
+        assertEquals(1, mgrAlerts.size());
+
+        mockMvc.perform(get("/api/v1/shifts/branches-overview")
+                        .header("Authorization", "Bearer " + cooToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.branchId==" + testBranchId + " && @.managerClosePending==true)]").exists());
+
+        // 3. Kiểm tra khóa POS, thanh toán, cash-in/out, handover & PIN login
+        mockMvc.perform(post("/api/v1/orders")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"shiftId\":%d,\"totalAmount\":35000,\"finalAmount\":35000}".formatted(testBranchId, shiftId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("SHIFT_MANAGER_CLOSE_PENDING"));
+
+        mockMvc.perform(post("/api/v1/payments/cash")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"orderId\":%d,\"cashReceived\":50000}".formatted(pendingOrderId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("SHIFT_MANAGER_CLOSE_PENDING"));
+
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/cash-in")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":100000,\"reason\":\"Nạp thêm\"}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("SHIFT_MANAGER_CLOSE_PENDING"));
+
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/handover/initiate")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":5000000,\"reason\":\"Bàn giao lại\",\"pin\":\"%s\"}".formatted(CASHIER_PIN)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("SHIFT_MANAGER_CLOSE_PENDING"));
+
+        mockMvc.perform(get("/api/v1/auth/cashiers?branchId=" + testBranchId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data", hasSize(0)));
+
+        mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"employeeId\":%d,\"pin\":\"%s\"}".formatted(testBranchId, cashierId, CASHIER_PIN)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        // 4. Quản lý từ chối / trả lại ca -> mở lại POS & handover CANCELLED & alert REJECTED
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/manager-close/reject")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"Quán đón thêm đoàn khách, tiếp tục bán\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("OPEN"))
+                .andExpect(jsonPath("$.data.managerClosePending").value(false));
+
+        assertEquals(SecurityAlertStatus.REJECTED,
+                securityAlertRepository.findById(mgrAlerts.get(0).getId()).orElseThrow().getStatus());
+
+        // POS hoạt động lại
+        mockMvc.perform(post("/api/v1/orders")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"shiftId\":%d,\"totalAmount\":35000,\"finalAmount\":35000}".formatted(testBranchId, shiftId)))
+                .andExpect(status().isCreated());
+
+        // 5. Thu ngân gửi lại bàn giao với số thực đếm hụt -100.000 đ (4.900.000 so với 5.000.000) + giải trình
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/close")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "countedCash": 4900000,
+                                    "discrepancyReason": "Hụt 100k tiền lẻ trong ngăn kéo",
+                                    "pin": "%s",
+                                    "handoverToManager": true,
+                                    "handoverReason": "Đóng két cuối ngày"
+                                }
+                                """.formatted(CASHIER_PIN)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.managerClosePending").value(true));
+
+        // Quản lý kiểm đếm khác số bàn giao mà không giải trình -> 422 REASON_REQUIRED
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/manager-close/approve")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":4850000}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("REASON_REQUIRED"));
+
+        // Quản lý nhập rút vượt quá thực tế kiểm đếm -> 422 INSUFFICIENT_CASH
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/manager-close/approve")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":4900000,\"withdrawAmount\":4950000}"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("INSUFFICIENT_CASH"));
+
+        // 6. Quản lý xác nhận đúng 4.900.000 đ & rút 3.000.000 đ cất két -> lưu két 1.900.000 đ, giữ nguyên variance = -100.000 đ
+        mockMvc.perform(post("/api/v1/shifts/" + shiftId + "/manager-close/approve")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                    "countedCash": 4900000,
+                                    "withdrawAmount": 3000000,
+                                    "withdrawReason": "Cất két Quản lý cuối ngày",
+                                    "approveNote": "Đã kiểm 4tr9, cất 3tr, giữ két 1tr9"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CLOSED"))
+                .andExpect(jsonPath("$.data.managerClosePending").value(false))
+                .andExpect(jsonPath("$.data.expectedCash").value(2000000))
+                .andExpect(jsonPath("$.data.countedCash").value(1900000))
+                .andExpect(jsonPath("$.data.variance").value(-100000));
+
+        // Manager KHÔNG phát sinh attendance Kiosk khi xác nhận nhận két
+        assertTrue(attendanceRepository.findAllByUserIdOrderByCheckInTimeDesc(managerId).isEmpty(),
+                "Quản lý xác nhận nhận két cuối ca không được phát sinh bản ghi chấm công Kiosk");
+
+        // Kiểm tra phiếu bàn giao & CashTransaction
+        mockMvc.perform(get("/api/v1/shifts/" + shiftId)
+                        .header("Authorization", "Bearer " + bmToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.handovers[?(@.handoverType=='MANAGER_CLOSE' && @.status=='COMPLETED')].withdrawAmount",
+                        hasItem(3000000.0)))
+                .andExpect(jsonPath("$.data.transactions[?(@.type=='CASH_OUT')].amount", hasItem(3000000.0)))
+                .andExpect(jsonPath("$.data.transactions[?(@.type=='CLOSE')].amount", hasItem(1900000.0)));
+
+        // previous-closed trả về đúng 1.900.000 đ
+        mockMvc.perform(get("/api/v1/shifts/previous-closed?branchId=" + testBranchId)
+                        .header("Authorization", "Bearer " + bmToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.countedCash").value(1900000))
+                .andExpect(jsonPath("$.data.variance").value(-100000));
+
+        // Đối chiếu CashFlowReport (CashFlowCalculator) phải khớp tuyệt đối variance = -100.000 đ
+        mockMvc.perform(get("/api/v1/reports/cash-flow?branchId=" + testBranchId)
+                        .header("Authorization", "Bearer " + bmToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.shifts[?(@.shiftId==" + shiftId + ")].cashOut", hasItem(3000000.0)))
+                .andExpect(jsonPath("$.data.shifts[?(@.shiftId==" + shiftId + ")].expectedCash", hasItem(2000000.0)))
+                .andExpect(jsonPath("$.data.shifts[?(@.shiftId==" + shiftId + ")].countedCash", hasItem(1900000.0)))
+                .andExpect(jsonPath("$.data.shifts[?(@.shiftId==" + shiftId + ")].variance", hasItem(-100000.0)));
+    }
+
+    @Test
+    @DisplayName("Giữa hai ca: Nạp tiền đầu ngày (kể cả trước ca đầu tiên, hỗ trợ hủy) & Rút tiền sau kết ca giữ nguyên chênh lệch")
+    void testBetweenShiftPreOpenCashInAndPostCloseCashOut() throws Exception {
+        int sched1Id = scheduleCashierForCurrentWindow(testBranchId, cashierId);
+        MvcResult pinLoginRes = mockMvc.perform(post("/api/v1/auth/pin-login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"employeeId\":%d,\"pin\":\"%s\"}"
+                                .formatted(testBranchId, cashierId, CASHIER_PIN)))
+                .andExpect(status().isOk())
+                .andReturn();
+        String cashierToken = com.jayway.jsonpath.JsonPath.read(pinLoginRes.getResponse().getContentAsString(), "$.data.accessToken");
+
+        // 1. Thu ngân không được nạp tiền đầu ngày -> 403
+        mockMvc.perform(post("/api/v1/shifts/pre-open-cash-in")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"amount\":500000,\"reason\":\"Thử nạp\"}".formatted(testBranchId)))
+                .andExpect(status().isForbidden());
+
+        // 2. Quản lý nạp 2 khoản trước khi có bất kỳ ca nào mở (500k + 300k), sau đó hủy khoản 300k
+        mockMvc.perform(post("/api/v1/shifts/pre-open-cash-in")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"amount\":500000,\"reason\":\"Nạp tiền lẻ đầu ngày\"}".formatted(testBranchId)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.amount").value(500000));
+
+        MvcResult adj2Res = mockMvc.perform(post("/api/v1/shifts/pre-open-cash-in")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"amount\":300000,\"reason\":\"Nạp nhầm khoản thứ 2\"}".formatted(testBranchId)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        int adj2Id = com.jayway.jsonpath.JsonPath.read(adj2Res.getResponse().getContentAsString(), "$.data.id");
+
+        mockMvc.perform(delete("/api/v1/shifts/pre-open-cash-in/" + adj2Id + "?reason=Huy%20nhap%20nham")
+                        .header("Authorization", "Bearer " + bmToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.cancelledAt").isNotEmpty());
+
+        mockMvc.perform(get("/api/v1/shifts/previous-closed?branchId=" + testBranchId)
+                        .header("Authorization", "Bearer " + cashierToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.hasPreviousShift").value(false))
+                .andExpect(jsonPath("$.data.preOpenCashIn").value(500000))
+                .andExpect(jsonPath("$.data.expectedOpeningCash").value(500000))
+                .andExpect(jsonPath("$.data.preOpenAdjustments", hasSize(1)));
+
+        // 3. Mở ca < tiền Quản lý đã nạp -> 400
+        mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":400000}"
+                                .formatted(testBranchId, sched1Id)))
+                .andExpect(status().isBadRequest());
+
+        // Mở Ca #1 khớp 500.000 -> baseOpeningCash = 0, preOpenCashIn = 500.000, expectedCash = 500.000
+        MvcResult s1Res = mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"scheduledShiftId\":%d,\"openingCash\":500000}"
+                                .formatted(testBranchId, sched1Id)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.openingCash").value(0))
+                .andExpect(jsonPath("$.data.preOpenCashIn").value(500000))
+                .andExpect(jsonPath("$.data.expectedCash").value(500000))
+                .andExpect(jsonPath("$.data.openingVariance").value(0))
+                .andReturn();
+        int shift1Id = com.jayway.jsonpath.JsonPath.read(s1Res.getResponse().getContentAsString(), "$.data.id");
+
+        // Khi đang có ca mở, không cho dùng pre-open-cash-in hoặc post-close cash-out
+        mockMvc.perform(post("/api/v1/shifts/pre-open-cash-in")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"amount\":100000,\"reason\":\"Đang mở ca\"}".formatted(testBranchId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("SHIFT_ALREADY_OPEN"));
+
+        mockMvc.perform(post("/api/v1/shifts/previous-closed/cash-out")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"amount\":100000,\"reason\":\"Đang mở ca\"}".formatted(testBranchId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("SHIFT_ALREADY_OPEN"));
+
+        // Đóng Ca #1 với doanh thu thêm +1.500k (nạp tiền trong ca) và thiếu 100k -> expected=2.000k, counted=1.900k, variance=-100k
+        mockMvc.perform(post("/api/v1/shifts/" + shift1Id + "/cash-in")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":1500000,\"reason\":\"Nạp dự phòng\"}"))
+                .andExpect(status().isOk());
+
+        moveShiftIntoOnTimeCloseWindow(shift1Id);
+        mockMvc.perform(post("/api/v1/shifts/" + shift1Id + "/close")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"countedCash\":1900000,\"discrepancyReason\":\"Hụt 100k cuối ca 1\"}"))
+                .andExpect(status().isOk());
+
+        // 4. Sau kết ca: Rút quá số dư -> INSUFFICIENT_CASH; Thu ngân rút -> 403; BM rút 500k -> còn 1.400k, giữ nguyên variance=-100k
+        mockMvc.perform(post("/api/v1/shifts/previous-closed/cash-out")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"amount\":1950000,\"reason\":\"Vượt số dư\"}".formatted(testBranchId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("INSUFFICIENT_CASH"));
+
+        mockMvc.perform(post("/api/v1/shifts/previous-closed/cash-out")
+                        .header("Authorization", "Bearer " + cashierToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"amount\":100000,\"reason\":\"Thu ngân rút\"}".formatted(testBranchId)))
+                .andExpect(status().isForbidden());
+
+        mockMvc.perform(post("/api/v1/shifts/previous-closed/cash-out")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"amount\":500000,\"reason\":\"Rút bớt tiền cất két sau đóng cửa\"}".formatted(testBranchId)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.type").value("CASH_OUT"))
+                .andExpect(jsonPath("$.data.amount").value(500000));
+
+        // 5. Quản lý nạp thêm 600.000 đ đầu ngày mới -> Dự kiến mở Ca #2 = 1.400k + 600k = 2.000k
+        mockMvc.perform(post("/api/v1/shifts/pre-open-cash-in")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"amount\":600000,\"reason\":\"Bổ sung tiền thối đầu ngày mới\"}".formatted(testBranchId)))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/api/v1/shifts/previous-closed?branchId=" + testBranchId)
+                        .header("Authorization", "Bearer " + bmToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.hasPreviousShift").value(true))
+                .andExpect(jsonPath("$.data.countedCash").value(1400000))
+                .andExpect(jsonPath("$.data.variance").value(-100000))
+                .andExpect(jsonPath("$.data.preOpenCashIn").value(600000))
+                .andExpect(jsonPath("$.data.expectedOpeningCash").value(2000000));
+
+        // Mở Ca #2 lệch dự kiến (1.950k) không giải trình -> REASON_REQUIRED
+        mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"openingCash\":1950000}".formatted(testBranchId)))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.detailCode").value("REASON_REQUIRED"));
+
+        // Mở Ca #2 đúng 2.000.000 đ -> baseOpeningCash=1.400.000, preOpenCashIn=600.000, expectedCash=2.000.000, openingVariance=0
+        MvcResult s2Res = mockMvc.perform(post("/api/v1/shifts/open")
+                        .header("Authorization", "Bearer " + bmToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"branchId\":%d,\"openingCash\":2000000}".formatted(testBranchId)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.previousShiftId").value(shift1Id))
+                .andExpect(jsonPath("$.data.previousClosingCash").value(1400000))
+                .andExpect(jsonPath("$.data.openingCash").value(1400000))
+                .andExpect(jsonPath("$.data.preOpenCashIn").value(600000))
+                .andExpect(jsonPath("$.data.expectedCash").value(2000000))
+                .andExpect(jsonPath("$.data.openingVariance").value(0))
+                .andReturn();
+        int shift2Id = com.jayway.jsonpath.JsonPath.read(s2Res.getResponse().getContentAsString(), "$.data.id");
+
+        // Khoản nạp đầu ngày đã được tiêu thụ sạch trên previous-closed
+        mockMvc.perform(get("/api/v1/shifts/previous-closed?branchId=" + testBranchId)
+                        .header("Authorization", "Bearer " + bmToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.preOpenCashIn").value(0))
+                .andExpect(jsonPath("$.data.preOpenAdjustments", hasSize(0)));
+
+        // Kiểm tra CashFlowReport không bị tính trùng cho cả 2 ca
+        mockMvc.perform(get("/api/v1/reports/cash-flow?branchId=" + testBranchId)
+                        .header("Authorization", "Bearer " + bmToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.shifts[?(@.shiftId==" + shift1Id + ")].cashIn", hasItem(2000000.0)))
+                .andExpect(jsonPath("$.data.shifts[?(@.shiftId==" + shift1Id + ")].cashOut", hasItem(500000.0)))
+                .andExpect(jsonPath("$.data.shifts[?(@.shiftId==" + shift1Id + ")].expectedCash", hasItem(1500000.0)))
+                .andExpect(jsonPath("$.data.shifts[?(@.shiftId==" + shift1Id + ")].countedCash", hasItem(1400000.0)))
+                .andExpect(jsonPath("$.data.shifts[?(@.shiftId==" + shift1Id + ")].variance", hasItem(-100000.0)))
+                .andExpect(jsonPath("$.data.shifts[?(@.shiftId==" + shift2Id + ")].openingCash", hasItem(1400000.0)))
+                .andExpect(jsonPath("$.data.shifts[?(@.shiftId==" + shift2Id + ")].cashIn", hasItem(600000.0)))
+                .andExpect(jsonPath("$.data.shifts[?(@.shiftId==" + shift2Id + ")].expectedCash", hasItem(2000000.0)));
     }
 }

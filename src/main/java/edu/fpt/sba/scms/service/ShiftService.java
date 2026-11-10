@@ -2,17 +2,22 @@ package edu.fpt.sba.scms.service;
 
 import edu.fpt.sba.scms.dto.request.AcceptShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.ApproveEarlyCloseRequest;
+import edu.fpt.sba.scms.dto.request.ApproveManagerCloseRequest;
 import edu.fpt.sba.scms.dto.request.CancelShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.CashAdjustmentRequest;
 import edu.fpt.sba.scms.dto.request.CloseShiftRequest;
 import edu.fpt.sba.scms.dto.request.CreateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.InitiateShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.OpenShiftRequest;
+import edu.fpt.sba.scms.dto.request.PostCloseCashOutRequest;
+import edu.fpt.sba.scms.dto.request.PreOpenCashInRequest;
 import edu.fpt.sba.scms.dto.request.RejectEarlyCloseRequest;
+import edu.fpt.sba.scms.dto.request.RejectManagerCloseRequest;
 import edu.fpt.sba.scms.dto.request.UpdateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.query.ShiftListQuery;
 import edu.fpt.sba.scms.dto.response.BranchShiftOverviewResponse;
 import edu.fpt.sba.scms.dto.response.CashTransactionResponse;
+import edu.fpt.sba.scms.dto.response.PreOpenCashAdjustmentResponse;
 import edu.fpt.sba.scms.dto.response.PreviousShiftSummaryResponse;
 import edu.fpt.sba.scms.dto.response.ShiftResponse;
 import edu.fpt.sba.scms.dto.response.ShiftScheduleResponse;
@@ -45,6 +50,16 @@ public interface ShiftService {
     ShiftResponse approveEarlyClose(Integer shiftId, ApproveEarlyCloseRequest request, UserPrincipal principal);
 
     ShiftResponse rejectEarlyClose(Integer shiftId, RejectEarlyCloseRequest request, UserPrincipal principal);
+
+    ShiftResponse approveManagerClose(Integer shiftId, ApproveManagerCloseRequest request, UserPrincipal principal);
+
+    ShiftResponse rejectManagerClose(Integer shiftId, RejectManagerCloseRequest request, UserPrincipal principal);
+
+    PreOpenCashAdjustmentResponse preOpenCashIn(PreOpenCashInRequest request, UserPrincipal principal);
+
+    PreOpenCashAdjustmentResponse cancelPreOpenCashIn(Integer adjustmentId, String reason, UserPrincipal principal);
+
+    CashTransactionResponse postCloseCashOut(PostCloseCashOutRequest request, UserPrincipal principal);
 
     ShiftSummaryResponse getCurrentShiftSummary(Integer branchId);
 

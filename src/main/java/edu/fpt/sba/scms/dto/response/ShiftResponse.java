@@ -47,6 +47,8 @@ public record ShiftResponse(
         BigDecimal earlyCloseCountedCash,
         BigDecimal earlyCloseVariance,
         String earlyCloseDiscrepancyReason,
-        String earlyCloseReason
+        String earlyCloseReason,
+        boolean managerClosePending,
+        BigDecimal preOpenCashIn
 ) {
 }

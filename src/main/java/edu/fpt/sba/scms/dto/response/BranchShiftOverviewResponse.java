@@ -28,6 +28,8 @@ public record BranchShiftOverviewResponse(
         Integer activeCashierId,
         String activeCashierName,
         boolean handoverPending,
-        boolean earlyClosePending
+        boolean earlyClosePending,
+        boolean managerClosePending,
+        BigDecimal preOpenCashIn
 ) {
 }

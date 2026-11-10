@@ -4,18 +4,23 @@ import edu.fpt.sba.scms.dto.ApiErrorResponse;
 import edu.fpt.sba.scms.dto.PageResponse;
 import edu.fpt.sba.scms.dto.request.AcceptShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.ApproveEarlyCloseRequest;
+import edu.fpt.sba.scms.dto.request.ApproveManagerCloseRequest;
 import edu.fpt.sba.scms.dto.request.CancelShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.CashAdjustmentRequest;
 import edu.fpt.sba.scms.dto.request.CloseShiftRequest;
 import edu.fpt.sba.scms.dto.request.CreateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.InitiateShiftHandoverRequest;
 import edu.fpt.sba.scms.dto.request.OpenShiftRequest;
+import edu.fpt.sba.scms.dto.request.PostCloseCashOutRequest;
+import edu.fpt.sba.scms.dto.request.PreOpenCashInRequest;
 import edu.fpt.sba.scms.dto.request.RejectEarlyCloseRequest;
+import edu.fpt.sba.scms.dto.request.RejectManagerCloseRequest;
 import edu.fpt.sba.scms.dto.request.UpdateScheduleShiftRequest;
 import edu.fpt.sba.scms.dto.request.query.ShiftListQuery;
 import edu.fpt.sba.scms.dto.response.BranchShiftOverviewResponse;
 import edu.fpt.sba.scms.dto.response.CashTransactionResponse;
 import edu.fpt.sba.scms.dto.response.MessageResponse;
+import edu.fpt.sba.scms.dto.response.PreOpenCashAdjustmentResponse;
 import edu.fpt.sba.scms.dto.response.PreviousShiftSummaryResponse;
 import edu.fpt.sba.scms.dto.response.ShiftResponse;
 import edu.fpt.sba.scms.dto.response.ShiftScheduleResponse;
@@ -173,6 +178,60 @@ public class ShiftController {
             @RequestBody(required = false) @Valid RejectEarlyCloseRequest request,
             @AuthenticationPrincipal UserPrincipal principal) {
         return shiftService.rejectEarlyClose(id, request, principal);
+    }
+
+    @Operation(summary = "Quản lý xác nhận nhận két cuối ca & tùy chọn rút tiền cất két Quản lý",
+            description = "Quản lý chi nhánh / COO kiểm nhận lại tiền két Thu ngân bàn giao cuối ca, có thể rút bớt một khoản về két Quản lý và chốt đóng ca với số dư lưu két còn lại.")
+    @PostMapping("/{id}/manager-close/approve")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER')")
+    public ShiftResponse approveManagerClose(
+            @PathVariable Integer id,
+            @RequestBody(required = false) @Valid ApproveManagerCloseRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return shiftService.approveManagerClose(id, request, principal);
+    }
+
+    @Operation(summary = "Quản lý trả lại ca đang chờ nhận két để mở lại quầy POS",
+            description = "Hủy phiếu bàn giao cuối ca đang chờ Quản lý nhận để mở lại hoạt động POS của ca hiện tại.")
+    @PostMapping("/{id}/manager-close/reject")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER')")
+    public ShiftResponse rejectManagerClose(
+            @PathVariable Integer id,
+            @RequestBody(required = false) @Valid RejectManagerCloseRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return shiftService.rejectManagerClose(id, request, principal);
+    }
+
+    @Operation(summary = "Quản lý nạp thêm tiền mặt vào két đầu ngày (khi chưa mở ca)",
+            description = "Quản lý chi nhánh / COO bổ sung tiền mặt/tiền lẻ vào két khi chưa có ca mở. Khoản này được cộng vào tiền dự kiến mở ca và tự ghi CASH_IN vào ca mới khi mở.")
+    @PostMapping("/pre-open-cash-in")
+    @ResponseStatus(HttpStatus.CREATED)
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER')")
+    public PreOpenCashAdjustmentResponse preOpenCashIn(
+            @RequestBody @Valid PreOpenCashInRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return shiftService.preOpenCashIn(request, principal);
+    }
+
+    @Operation(summary = "Hủy khoản nạp tiền đầu ngày chưa gắn vào ca",
+            description = "Cho phép Quản lý chi nhánh / COO hủy khoản nạp đầu ngày nếu nhập nhầm trước khi ca tiếp theo được mở.")
+    @DeleteMapping("/pre-open-cash-in/{adjustmentId}")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER')")
+    public PreOpenCashAdjustmentResponse cancelPreOpenCashIn(
+            @PathVariable Integer adjustmentId,
+            @RequestParam(required = false) String reason,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return shiftService.cancelPreOpenCashIn(adjustmentId, reason, principal);
+    }
+
+    @Operation(summary = "Quản lý rút tiền khỏi két sau khi ca gần nhất đã đóng",
+            description = "Khi không có ca mở, Quản lý chi nhánh / COO có thể rút tiền mặt cất két Quản lý từ số dư lưu két của ca đã đóng gần nhất.")
+    @PostMapping("/previous-closed/cash-out")
+    @PreAuthorize("hasAnyAuthority('COO', 'BRANCH_MANAGER')")
+    public CashTransactionResponse postCloseCashOut(
+            @RequestBody @Valid PostCloseCashOutRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return shiftService.postCloseCashOut(request, principal);
     }
 
     @Operation(summary = "Xem tổng kết ca & số dư két hiện tại",
