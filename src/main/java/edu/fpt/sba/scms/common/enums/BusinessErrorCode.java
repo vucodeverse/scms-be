@@ -43,7 +43,8 @@ public enum BusinessErrorCode {
     SHIFT_ASSIGNMENT_REQUIRED("Nhân viên chưa được phân công ca làm việc phù hợp để chấm công."),
     SHIFT_HANDOVER_PENDING("Két tiền đang tạm khóa chờ xác nhận bàn giao giữa ca. Vui lòng hoàn tất kiểm két nhận ca trước khi giao dịch."),
     SHIFT_EARLY_CLOSE_PENDING("Ca làm việc đang có yêu cầu đóng ca sớm chờ Quản lý chi nhánh xác nhận. Quầy POS tạm khóa cho đến khi được duyệt hoặc hủy yêu cầu."),
-    SHIFT_MANAGER_CLOSE_PENDING("Ca làm việc đã chốt kiểm két cuối ca và đang chờ Quản lý chi nhánh xác nhận nhận tiền / đóng ca. Quầy POS tạm khóa cho đến khi Quản lý xử lý.");
+    SHIFT_MANAGER_CLOSE_PENDING("Ca làm việc đã chốt kiểm két cuối ca và đang chờ Quản lý chi nhánh xác nhận nhận tiền / đóng ca. Quầy POS tạm khóa cho đến khi Quản lý xử lý."),
+    ORDER_NOT_PAID("Hóa đơn chỉ được xuất sau khi đơn hàng đã thanh toán thành công (BR-31).");
 
 
     private final String message;

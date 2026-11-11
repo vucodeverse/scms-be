@@ -30,6 +30,7 @@ import edu.fpt.sba.scms.model.AuthToken;
 import edu.fpt.sba.scms.model.Branch;
 import edu.fpt.sba.scms.model.Shift;
 import edu.fpt.sba.scms.model.ShiftAssignment;
+import edu.fpt.sba.scms.model.ShiftAssignmentId;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.BranchRepository;
 import edu.fpt.sba.scms.repository.ShiftAssignmentRepository;
@@ -205,7 +206,7 @@ public class AuthServiceImpl implements AuthService {
         return cashierUserIds.stream()
                 .map(activeById::get)
                 .filter(Objects::nonNull)
-                .filter(u -> u.getPosition() != null && UserDirectory.BRANCH_STAFF_ROLES.contains(u.getPosition()))
+                .filter(AuthServiceImpl::isEligiblePinCashierPosition)
                 .map(u -> {
                     Instant lockedUntil = activeLocks.get(u.getId());
                     boolean locked = lockedUntil != null && lockedUntil.isAfter(now);
@@ -399,7 +400,7 @@ public class AuthServiceImpl implements AuthService {
                     User activeHolder = activeCashierId == null
                             ? null
                             : userRepository.findWithRoleAndBranchById(activeCashierId).orElse(null);
-                    if (isActiveBranchStaff(activeHolder, branchId)) {
+                    if (isShiftCashierHolder(activeHolder, openShift, branchId)) {
                         eligibleIds.add(activeHolder.getId());
                     } else {
                         // Ca do Quản lý mở thay (holder không phải staff PIN) hoặc chưa có holder:
@@ -417,7 +418,7 @@ public class AuthServiceImpl implements AuthService {
                     collectAssignedCashiersForShift(openShift.getId(), eligibleIds);
                     shiftHandoverRepository
                             .findFirstByShiftIdAndStatusOrderByIdDesc(
-                                    openShift.getId(), ShiftHandoverStatus.PENDING_RECEIVE)
+                                     openShift.getId(), ShiftHandoverStatus.PENDING_RECEIVE)
                             .ifPresent(pending -> {
                                 if (pending.getFromUserId() != null) {
                                     eligibleIds.add(pending.getFromUserId());
@@ -461,19 +462,52 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private boolean isCashierAllowedForPinLogin(User user, Integer branchId) {
-        if (!isActiveBranchStaff(user, branchId)) {
+        if (!isEligibleBranchCashier(user, branchId)) {
             return false;
         }
         return findEligiblePinCashierIds(branchId, Instant.now()).contains(user.getId());
     }
 
-    private static boolean isActiveBranchStaff(User user, Integer branchId) {
+    private static boolean isEligibleBranchCashier(User user, Integer branchId) {
         return user != null
                 && user.isActive()
                 && branchId != null
                 && branchId.equals(user.getBranchId())
+                && isEligiblePinCashierPosition(user);
+    }
+
+    private static boolean isEligiblePinCashierPosition(User user) {
+        return user != null
                 && user.getPosition() != null
-                && UserDirectory.BRANCH_STAFF_ROLES.contains(user.getPosition());
+                && (UserDirectory.BRANCH_STAFF_ROLES.contains(user.getPosition())
+                    || user.getPosition() == Roles.BRANCH_MANAGER);
+    }
+
+    private boolean isShiftCashierHolder(User user, Shift shift, Integer branchId) {
+        if (!isEligibleBranchCashier(user, branchId)) {
+            return false;
+        }
+        if (UserDirectory.BRANCH_STAFF_ROLES.contains(user.getPosition())) {
+            return true;
+        }
+        if (user.getPosition() == Roles.BRANCH_MANAGER && shift != null) {
+            return isAssignedCashierInShift(shift.getId(), user.getId());
+        }
+        return false;
+    }
+
+    private boolean isAssignedCashierInShift(Integer shiftId, Integer userId) {
+        if (shiftId == null || userId == null) {
+            return false;
+        }
+        return shiftAssignmentRepository.findById(new ShiftAssignmentId(shiftId, userId))
+                .map(sa -> {
+                    String effectiveRole = StringUtils.hasText(sa.getRoleInShift())
+                            ? sa.getRoleInShift().trim()
+                            : (sa.getEmployee() != null ? sa.getEmployee().roleCode() : null);
+                    return Roles.CASHIER.code().equalsIgnoreCase(effectiveRole);
+                })
+                .orElse(false);
     }
 
     private String buildPinLoginDeniedMessage(User user, Integer branchId) {
@@ -494,7 +528,7 @@ public class AuthServiceImpl implements AuthService {
                 User holder = holderId == null
                         ? null
                         : userRepository.findWithRoleAndBranchById(holderId).orElse(null);
-                if (isActiveBranchStaff(holder, branchId)
+                if (isShiftCashierHolder(holder, openShift, branchId)
                         && user != null
                         && !Objects.equals(holderId, user.getId())) {
                     return "Ca đang mở hiện chưa bàn giao két giữa ca. Thu ngân đang giữ két phải thực hiện Bàn giao két giữa ca (hoặc Đóng ca) trước khi đổi Thu ngân khác.";

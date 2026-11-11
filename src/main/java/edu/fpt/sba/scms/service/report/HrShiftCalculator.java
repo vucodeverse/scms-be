@@ -90,6 +90,13 @@ public final class HrShiftCalculator {
 
     private static AttendanceRow findMatch(AssignmentRow shift, List<AttendanceRow> candidates,
                                            Set<AttendanceRow> used, Instant now) {
+        if (shift.getShiftId() != null) {
+            for (AttendanceRow a : candidates) {
+                if (shift.getShiftId().equals(a.getShiftId()) && used.add(a)) {
+                    return a;
+                }
+            }
+        }
         for (AttendanceRow a : candidates) {
             Instant end = a.getCheckOut() != null ? a.getCheckOut() : now;
             boolean overlaps = a.getCheckIn().isBefore(shift.getPlannedEnd()) && end.isAfter(shift.getPlannedStart());

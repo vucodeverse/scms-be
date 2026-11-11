@@ -11,6 +11,8 @@ public record KioskEmployeeDto(
         boolean isCheckedIn,
         @Schema(description = "true nếu nhân viên được phân công ca làm việc phù hợp để check-in/check-out")
         boolean hasAssignedShift,
+        @Schema(description = "ID ca làm việc được gán phù hợp (null nếu chưa phân công)")
+        Integer shiftId,
         @Schema(description = "Nhãn ca làm việc được gán (vd: Ca chiều · 12:30–18:00), null nếu chưa phân công")
         String shiftLabel,
         @Schema(description = "Trạng thái ca phân công: OPEN, SCHEDULED, CLOSED hoặc null")
@@ -18,6 +20,10 @@ public record KioskEmployeeDto(
         @Schema(description = "true nếu PIN của nhân viên đang bị tạm khóa do nhập sai nhiều lần")
         boolean pinLocked,
         @Schema(description = "Thời điểm hết hạn khóa tạm PIN (null nếu không bị khóa)")
-        java.time.Instant pinLockedUntil
+        java.time.Instant pinLockedUntil,
+        @Schema(description = "true nếu nhân viên thuộc ca trước nhưng chưa check-out khi ca mới đã bắt đầu")
+        boolean isPreviousShiftUnclosed,
+        @Schema(description = "true nếu nhân viên có lượt chấm công gần nhất bị hệ thống tự động chốt do quên check-out")
+        boolean flaggedForgotCheckout
 ) {
 }

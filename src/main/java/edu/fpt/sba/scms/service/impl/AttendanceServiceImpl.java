@@ -16,6 +16,7 @@ import edu.fpt.sba.scms.common.exception.NotFoundException;
 import edu.fpt.sba.scms.common.exception.PinLockedException;
 import edu.fpt.sba.scms.common.util.DateTimeUtil;
 import edu.fpt.sba.scms.domain.attendance.AttendanceCalculator;
+import edu.fpt.sba.scms.domain.shift.ShiftSchedulePolicy;
 import edu.fpt.sba.scms.dto.request.CardAttendanceRequest;
 import edu.fpt.sba.scms.dto.request.PinAttendanceRequest;
 import edu.fpt.sba.scms.dto.response.AttendanceResultDto;
@@ -36,8 +37,10 @@ import edu.fpt.sba.scms.service.support.PinHasher;
 import edu.fpt.sba.scms.service.support.PinLockoutService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -55,8 +58,10 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class AttendanceServiceImpl implements AttendanceService {
 
+    private static final Duration EARLY_OPEN_GRACE = ShiftSchedulePolicy.EARLY_OPEN_GRACE;
     private static final Duration OVERNIGHT_GRACE = Duration.ofHours(1);
     private static final Duration CHECKOUT_CLOSED_SHIFT_GRACE = Duration.ofHours(2);
+    public static final Duration FORGOTTEN_CHECKOUT_GRACE = Duration.ofMinutes(10);
     private static final DateTimeFormatter HM_FORMATTER = DateTimeFormatter.ofPattern("HH:mm");
 
     private final AttendanceRepository attendanceRepository;
@@ -76,19 +81,27 @@ public class AttendanceServiceImpl implements AttendanceService {
         Instant now = Instant.now();
         LocalDate todayVN = DateTimeUtil.todayVN();
 
-        requireAssignedShiftForCheckIn(user, request.branchId(), now, todayVN);
+        Shift targetShift = resolveShiftForCheckIn(user, request.branchId(), request.shiftId(), now, todayVN);
 
         // Kiểm tra xem nhân viên đã có lượt check-in mở hay chưa
-        Optional<Attendance> openAttendance = attendanceRepository
+        Optional<Attendance> openOpt = attendanceRepository
                 .findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(user.getId());
-        if (openAttendance.isPresent()) {
-            throw new BusinessRuleException(BusinessErrorCode.ATTENDANCE_ALREADY_CHECKED_IN);
+
+        if (openOpt.isPresent()) {
+            Attendance openAttendance = openOpt.get();
+            // Nếu đã check-in chính ca này rồi -> chặn không cho check-in lần nữa (BR-06)
+            if (openAttendance.getShiftId() != null && openAttendance.getShiftId().equals(targetShift.getId())) {
+                throw new BusinessRuleException(BusinessErrorCode.ATTENDANCE_ALREADY_CHECKED_IN);
+            }
+            // Nếu là lượt mở từ ca cũ (ca kép hoặc quên check-out ca trước) -> Tự động đóng ca cũ!
+            autoCompletePreviousAttendance(openAttendance, targetShift, now);
         }
 
         Attendance attendance = Attendance.builder()
                 .userId(user.getId())
                 .branchId(request.branchId())
-                .workDate(todayVN)
+                .shiftId(targetShift.getId())
+                .workDate(targetShift.getShiftDate() != null ? targetShift.getShiftDate() : todayVN)
                 .method("PIN")
                 .checkInTime(now)
                 .status(AttendanceStatus.CHECKED_IN)
@@ -96,9 +109,10 @@ public class AttendanceServiceImpl implements AttendanceService {
                 .build();
 
         Attendance saved = attendanceRepository.save(attendance);
-        log.info("Nhân viên '{}' (ID={}) check-in thành công tại chi nhánh {}", user.getFullName(), user.getId(), request.branchId());
+        log.info("Nhân viên '{}' (ID={}) check-in thành công ca #{} ({}) tại chi nhánh {}",
+                user.getFullName(), user.getId(), targetShift.getId(), formatShiftLabel(targetShift), request.branchId());
 
-        return attendanceMapper.toResultDto(saved, user, "Check-in thành công.");
+        return attendanceMapper.toResultDto(saved, user, formatShiftLabel(targetShift), "Check-in thành công.");
     }
 
     @Override
@@ -109,8 +123,13 @@ public class AttendanceServiceImpl implements AttendanceService {
         Instant now = Instant.now();
         LocalDate todayVN = DateTimeUtil.todayVN();
 
-        Optional<Attendance> openOpt = attendanceRepository
-                .findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(user.getId());
+        Optional<Attendance> openOpt = request.shiftId() != null
+                ? attendanceRepository.findFirstByUserIdAndShiftIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(user.getId(), request.shiftId())
+                : attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(user.getId());
+
+        if (openOpt.isEmpty() && request.shiftId() != null) {
+            openOpt = attendanceRepository.findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(user.getId());
+        }
 
         requireAssignedShiftForCheckOut(user, request.branchId(), openOpt.orElse(null), now, todayVN);
 
@@ -134,9 +153,12 @@ public class AttendanceServiceImpl implements AttendanceService {
         }
 
         Attendance saved = attendanceRepository.save(attendance);
+        String shiftLabel = saved.getShiftId() != null
+                ? shiftRepository.findById(saved.getShiftId()).map(AttendanceServiceImpl::formatShiftLabel).orElse(null)
+                : null;
         log.info("Nhân viên '{}' (ID={}) check-out thành công. Tổng phút làm việc: {}", user.getFullName(), user.getId(), workedMinutes);
 
-        return attendanceMapper.toResultDto(saved, user, "Check-out thành công. Tổng thời gian làm việc: " + workedMinutes + " phút.");
+        return attendanceMapper.toResultDto(saved, user, shiftLabel, "Check-out thành công. Tổng thời gian làm việc: " + workedMinutes + " phút.");
     }
 
     @Override
@@ -155,12 +177,34 @@ public class AttendanceServiceImpl implements AttendanceService {
         Optional<Attendance> openOpt = attendanceRepository
                 .findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(user.getId());
 
-        if (openOpt.isPresent()) {
-            // Đã check-in -> kiểm tra gán ca rồi thực hiện check-out
-            Attendance attendance = openOpt.get();
-            requireAssignedShiftForCheckOut(user, request.branchId(), attendance, now, todayVN);
+        List<Shift> assigned = loadAssignedShifts(user.getId(), request.branchId(), todayVN.minusDays(1));
+        Optional<Shift> eligibleCheckInShift = pickBestShift(assigned, s -> isEligibleForCheckIn(s, now, todayVN), now);
 
-            long workedMinutes = AttendanceCalculator.calculateWorkedMinutes(attendance.getCheckInTime(), now);
+        if (openOpt.isPresent()) {
+            Attendance openAtt = openOpt.get();
+            Optional<Shift> nextShiftOpt = findNextShiftForEmployee(assigned, openAtt, now, todayVN);
+
+            if (nextShiftOpt.isPresent()) {
+                Shift targetShift = nextShiftOpt.get();
+                autoCompletePreviousAttendance(openAtt, targetShift, now);
+                Attendance newAtt = Attendance.builder()
+                        .userId(user.getId())
+                        .branchId(request.branchId())
+                        .shiftId(targetShift.getId())
+                        .workDate(targetShift.getShiftDate() != null ? targetShift.getShiftDate() : todayVN)
+                        .method("RFID")
+                        .checkInTime(now)
+                        .status(AttendanceStatus.CHECKED_IN)
+                        .notes(request.notes())
+                        .build();
+                Attendance saved = attendanceRepository.save(newAtt);
+                log.info("Quẹt thẻ chuyển ca: user={}, branch={}, shiftId={}", user.getId(), request.branchId(), targetShift.getId());
+                return attendanceMapper.toResultDto(saved, user, formatShiftLabel(targetShift), "Check-in thành công qua thẻ vào " + formatShiftLabel(targetShift) + ".");
+            }
+
+            requireAssignedShiftForCheckOut(user, request.branchId(), openAtt, now, todayVN);
+
+            long workedMinutes = AttendanceCalculator.calculateWorkedMinutes(openAtt.getCheckInTime(), now);
 
             // BR-07: Khoảng cách tối thiểu giữa lần Check-in và Check-out phải >= 15 phút
             if (!AttendanceCalculator.isMinIntervalSatisfied(workedMinutes)) {
@@ -168,49 +212,133 @@ public class AttendanceServiceImpl implements AttendanceService {
                         "Khoảng cách chấm công tối thiểu giữa lần check-in và check-out phải từ 15 phút trở lên.");
             }
 
-            attendance.setCheckOutTime(now);
-            attendance.setWorkedMinutes(workedMinutes);
-            attendance.setStatus(AttendanceStatus.COMPLETED);
-            attendance.setMethod("RFID");
+            openAtt.setCheckOutTime(now);
+            openAtt.setWorkedMinutes(workedMinutes);
+            openAtt.setStatus(AttendanceStatus.COMPLETED);
+            openAtt.setMethod("RFID");
             if (request.notes() != null && !request.notes().isBlank()) {
-                attendance.setNotes(request.notes());
+                openAtt.setNotes(request.notes());
             }
-            Attendance saved = attendanceRepository.save(attendance);
+            Attendance saved = attendanceRepository.save(openAtt);
+            String shiftLabel = saved.getShiftId() != null
+                    ? shiftRepository.findById(saved.getShiftId()).map(AttendanceServiceImpl::formatShiftLabel).orElse(null)
+                    : null;
             log.info("Quẹt thẻ check-out: user={}, workedMinutes={}", user.getId(), workedMinutes);
-            return attendanceMapper.toResultDto(saved, user, "Check-out thành công qua thẻ. Tổng thời gian: " + workedMinutes + " phút.");
+            return attendanceMapper.toResultDto(saved, user, shiftLabel, "Check-out thành công qua thẻ. Tổng thời gian: " + workedMinutes + " phút.");
         } else {
-            // Chưa check-in -> kiểm tra gán ca rồi thực hiện check-in
-            requireAssignedShiftForCheckIn(user, request.branchId(), now, todayVN);
+            Shift targetShift = eligibleCheckInShift.orElseGet(() ->
+                    resolveShiftForCheckIn(user, request.branchId(), request.shiftId(), now, todayVN));
 
             Attendance attendance = Attendance.builder()
                     .userId(user.getId())
                     .branchId(request.branchId())
-                    .workDate(todayVN)
+                    .shiftId(targetShift.getId())
+                    .workDate(targetShift.getShiftDate() != null ? targetShift.getShiftDate() : todayVN)
                     .method("RFID")
                     .checkInTime(now)
                     .status(AttendanceStatus.CHECKED_IN)
                     .notes(request.notes())
                     .build();
             Attendance saved = attendanceRepository.save(attendance);
-            log.info("Quẹt thẻ check-in: user={}, branch={}", user.getId(), request.branchId());
-            return attendanceMapper.toResultDto(saved, user, "Check-in thành công qua thẻ.");
+            log.info("Quẹt thẻ check-in: user={}, branch={}, shiftId={}", user.getId(), request.branchId(), targetShift.getId());
+            return attendanceMapper.toResultDto(saved, user, formatShiftLabel(targetShift), "Check-in thành công qua thẻ vào " + formatShiftLabel(targetShift) + ".");
         }
     }
 
+    @Scheduled(fixedDelay = 60000, initialDelay = 15000)
+    @Transactional(rollbackFor = Exception.class)
+    public void scheduledAutoCheckoutExpiredAttendances() {
+        autoCheckoutExpiredAttendances(null, Instant.now());
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public int autoCheckoutExpiredAttendances(Integer branchId, Instant now) {
+        List<Attendance> openList = branchId != null
+                ? attendanceRepository.findAllByBranchIdAndCheckOutTimeIsNull(branchId)
+                : attendanceRepository.findAllByCheckOutTimeIsNull();
+
+        if (openList.isEmpty()) {
+            return 0;
+        }
+
+        LocalDate todayVN = DateTimeUtil.todayVN();
+        int count = 0;
+        for (Attendance att : openList) {
+            if (att.getShiftId() != null) {
+                Shift shift = shiftRepository.findById(att.getShiftId()).orElse(null);
+                if (shift != null && shift.getPlannedEnd() != null) {
+                    Instant graceCutoff = shift.getPlannedEnd().plus(FORGOTTEN_CHECKOUT_GRACE);
+                    boolean hasNextActiveShift = shiftRepository
+                            .findFirstByBranchIdAndStatusOrderByOpenedAtDesc(att.getBranchId(), ShiftStatus.OPEN)
+                            .map(nextS -> !nextS.getId().equals(shift.getId()))
+                            .orElse(false);
+
+                    boolean shiftFinished = shift.getStatus() == ShiftStatus.CLOSED
+                            || hasNextActiveShift
+                            || now.isAfter(graceCutoff.plus(Duration.ofHours(1)));
+
+                    if (now.isAfter(graceCutoff)
+                            && now.isAfter(att.getCheckInTime().plus(FORGOTTEN_CHECKOUT_GRACE))
+                            && shiftFinished) {
+                        autoCheckoutWithPlannedEnd(att, shift, now);
+                        count++;
+                    }
+                }
+            } else if (att.getWorkDate() != null && att.getWorkDate().isBefore(todayVN)) {
+                Instant fallbackEnd = att.getCheckInTime().plus(Duration.ofHours(8));
+                if (fallbackEnd.isAfter(now)) {
+                    fallbackEnd = now;
+                }
+                long workedMinutes = AttendanceCalculator.calculateWorkedMinutes(att.getCheckInTime(), fallbackEnd);
+                att.setCheckOutTime(fallbackEnd);
+                att.setWorkedMinutes(workedMinutes);
+                att.setStatus(AttendanceStatus.COMPLETED);
+                att.setFlaggedForgotCheckout(Boolean.TRUE);
+                String note = "Hệ thống tự động check-out do quên check-out qua ngày";
+                att.setNotes(StringUtils.hasText(att.getNotes()) ? att.getNotes() + "; " + note : note);
+                attendanceRepository.save(att);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private void autoCheckoutWithPlannedEnd(Attendance att, Shift shift, Instant now) {
+        Instant checkoutTime = shift.getPlannedEnd();
+        if (checkoutTime.isBefore(att.getCheckInTime())) {
+            checkoutTime = now;
+        }
+        long workedMinutes = AttendanceCalculator.calculateWorkedMinutes(att.getCheckInTime(), checkoutTime);
+        att.setCheckOutTime(checkoutTime);
+        att.setWorkedMinutes(workedMinutes);
+        att.setStatus(AttendanceStatus.COMPLETED);
+        att.setFlaggedForgotCheckout(Boolean.TRUE);
+        String note = "Hệ thống tự động check-out sau 10 phút hết ca #" + shift.getId() + " (Quên check-out, chốt đúng giờ kết thúc ca)";
+        att.setNotes(StringUtils.hasText(att.getNotes()) ? att.getNotes() + "; " + note : note);
+        attendanceRepository.save(att);
+        log.warn("Tự động check-out và gán cờ quên check-out: attendanceId={}, userId={}, shiftId={}, checkOutTime={}",
+                att.getId(), att.getUserId(), shift.getId(), checkoutTime);
+    }
+
     @Override
-    @Transactional(readOnly = true)
+    @Transactional(rollbackFor = Exception.class)
     public List<KioskEmployeeDto> getKioskEmployees(Integer branchId) {
         return getKioskEmployees(branchId, null, false, false);
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional(rollbackFor = Exception.class)
     public List<KioskEmployeeDto> getKioskEmployees(
             Integer branchId,
             Integer shiftId,
             Boolean onlyAssigned,
             Boolean excludeCashier) {
         requireActiveBranch(branchId);
+        Instant now = Instant.now();
+
+        // 1. Quét tự động chốt công cho các ca đã quá 10 phút sau plannedEnd
+        autoCheckoutExpiredAttendances(branchId, now);
+
         List<User> users = userRepository.findAllByBranchIdAndStatus(branchId, UserStatus.ACTIVE);
         List<Attendance> openAttendances = attendanceRepository.findAllByBranchIdAndCheckOutTimeIsNull(branchId);
         Map<Integer, Attendance> openByUser = openAttendances.stream()
@@ -219,7 +347,6 @@ public class AttendanceServiceImpl implements AttendanceService {
                         Function.identity(),
                         (a, b) -> a.getCheckInTime().isAfter(b.getCheckInTime()) ? a : b));
 
-        Instant now = Instant.now();
         LocalDate todayVN = DateTimeUtil.todayVN();
         LocalDate fromDate = openAttendances.stream()
                 .map(a -> DateTimeUtil.toVNDate(a.getCheckInTime()))
@@ -253,10 +380,14 @@ public class AttendanceServiceImpl implements AttendanceService {
                     }
                     if (targetSaByEmployee != null) {
                         ShiftAssignment targetSa = targetSaByEmployee.get(u.getId());
-                        if (targetSa == null) {
+                        Attendance openAtt = openByUser.get(u.getId());
+                        boolean isUnclosedPrevious = openAtt != null && openAtt.getShiftId() != null
+                                && !openAtt.getShiftId().equals(shiftId);
+                        if (targetSa == null && !isUnclosedPrevious) {
                             return false;
                         }
                         if (Boolean.TRUE.equals(excludeCashier)
+                                && targetSa != null
                                 && Roles.CASHIER.code().equalsIgnoreCase(targetSa.getRoleInShift())) {
                             return false;
                         }
@@ -268,9 +399,10 @@ public class AttendanceServiceImpl implements AttendanceService {
                         openByUser.get(u.getId()),
                         shiftsByUser.getOrDefault(u.getId(), List.of()),
                         activePinLocks.get(u.getId()),
+                        specifiedShift,
                         now,
                         todayVN))
-                .filter(dto -> !Boolean.TRUE.equals(onlyAssigned) || dto.hasAssignedShift())
+                .filter(dto -> !Boolean.TRUE.equals(onlyAssigned) || dto.hasAssignedShift() || dto.isPreviousShiftUnclosed())
                 .filter(dto -> !Boolean.TRUE.equals(excludeCashier) || !Roles.CASHIER.code().equalsIgnoreCase(dto.role()))
                 .toList();
     }
@@ -285,13 +417,21 @@ public class AttendanceServiceImpl implements AttendanceService {
                 .findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(employeeId);
 
         if (openAttendance.isPresent()) {
-            return attendanceMapper.toResultDto(openAttendance.get(), user, "Đang trong ca làm việc.");
+            Attendance att = openAttendance.get();
+            String shiftLabel = att.getShiftId() != null
+                    ? shiftRepository.findById(att.getShiftId()).map(AttendanceServiceImpl::formatShiftLabel).orElse(null)
+                    : null;
+            return attendanceMapper.toResultDto(att, user, shiftLabel, "Đang trong ca làm việc.");
         }
 
         // Tìm lượt gần nhất đã hoàn thành
         List<Attendance> list = attendanceRepository.findAllByUserIdOrderByCheckInTimeDesc(employeeId);
         if (!list.isEmpty()) {
-            return attendanceMapper.toResultDto(list.get(0), user, "Chưa vào ca làm việc.");
+            Attendance att = list.get(0);
+            String shiftLabel = att.getShiftId() != null
+                    ? shiftRepository.findById(att.getShiftId()).map(AttendanceServiceImpl::formatShiftLabel).orElse(null)
+                    : null;
+            return attendanceMapper.toResultDto(att, user, shiftLabel, "Chưa vào ca làm việc.");
         }
 
         return attendanceMapper.toNoRecordDto(user, "Chưa có dữ liệu chấm công.");
@@ -302,34 +442,252 @@ public class AttendanceServiceImpl implements AttendanceService {
             Attendance openAtt,
             List<Shift> assignedShifts,
             Instant pinLockedUntil,
+            Shift specifiedShift,
             Instant now,
             LocalDate todayVN) {
         boolean pinLocked = pinLockedUntil != null && pinLockedUntil.isAfter(now);
-        boolean isCheckedIn = openAtt != null;
-        Optional<Shift> eligibleShift = isCheckedIn
-                ? pickBestShift(assignedShifts, s -> isEligibleForCheckOut(s, openAtt, now, todayVN))
-                : pickBestShift(assignedShifts, s -> isEligibleForCheckIn(s, now, todayVN));
 
-        if (eligibleShift.isPresent()) {
-            Shift s = eligibleShift.get();
+        if (openAtt != null) {
+            Integer openShiftId = openAtt.getShiftId();
+            boolean isPreviousShift = openShiftId != null
+                    && specifiedShift != null
+                    && !openShiftId.equals(specifiedShift.getId());
+
+            if (isPreviousShift) {
+                // Đang có ca trước chưa kịp check-out khi ca mới đã được chọn trên POS
+                Shift oldShift = assignedShifts.stream()
+                        .filter(s -> s.getId().equals(openShiftId))
+                        .findFirst()
+                        .orElseGet(() -> shiftRepository.findById(openShiftId).orElse(null));
+
+                String oldLabel = oldShift != null ? formatShiftLabel(oldShift) : ("Ca #" + openShiftId);
+                String oldStatus = oldShift != null ? oldShift.getStatus().name() : "OPEN";
+
+                return attendanceMapper.toKioskDto(
+                        user,
+                        true,
+                        true,
+                        openShiftId,
+                        oldLabel,
+                        oldStatus,
+                        pinLocked,
+                        pinLocked ? pinLockedUntil : null,
+                        true,
+                        false);
+            }
+
+            Optional<Shift> nextShiftOpt = findNextShiftForEmployee(assignedShifts, openAtt, now, todayVN);
+
+            if (nextShiftOpt.isPresent()) {
+                Shift newShift = nextShiftOpt.get();
+                return attendanceMapper.toKioskDto(
+                        user,
+                        false,
+                        true,
+                        newShift.getId(),
+                        formatShiftLabel(newShift),
+                        newShift.getStatus().name(),
+                        pinLocked,
+                        pinLocked ? pinLockedUntil : null,
+                        false,
+                        false);
+            }
+
+            Optional<Shift> currentShiftOpt = openAtt.getShiftId() != null
+                    ? assignedShifts.stream().filter(s -> s.getId().equals(openAtt.getShiftId())).findFirst()
+                    : pickBestShift(assignedShifts, s -> isEligibleForCheckOut(s, openAtt, now, todayVN), now);
+
+            Shift s = currentShiftOpt.orElse(null);
+            Integer shiftId = s != null ? s.getId() : openAtt.getShiftId();
+            String label = s != null ? formatShiftLabel(s) : null;
+            String status = s != null ? s.getStatus().name() : null;
+
             return attendanceMapper.toKioskDto(
                     user,
-                    isCheckedIn,
                     true,
+                    true,
+                    shiftId,
+                    label,
+                    status,
+                    pinLocked,
+                    pinLocked ? pinLockedUntil : null,
+                    false,
+                    false);
+        }
+
+        List<Attendance> recentList = attendanceRepository.findAllByUserIdOrderByCheckInTimeDesc(user.getId());
+        boolean flaggedForgot = !recentList.isEmpty() && Boolean.TRUE.equals(recentList.get(0).getFlaggedForgotCheckout());
+
+        Optional<Shift> checkInShiftOpt = pickBestShift(assignedShifts, s -> isEligibleForCheckIn(s, now, todayVN), now);
+        if (checkInShiftOpt.isPresent()) {
+            Shift s = checkInShiftOpt.get();
+            return attendanceMapper.toKioskDto(
+                    user,
+                    false,
+                    true,
+                    s.getId(),
                     formatShiftLabel(s),
                     s.getStatus().name(),
                     pinLocked,
-                    pinLocked ? pinLockedUntil : null);
+                    pinLocked ? pinLockedUntil : null,
+                    false,
+                    flaggedForgot);
         }
 
         // Nếu chưa vào ca và chỉ có ca hôm nay đã đóng -> hiển thị nhãn thông tin (nhưng hasAssignedShift = false)
         Optional<Shift> todayClosedShift = assignedShifts.stream()
                 .filter(s -> s.getStatus() == ShiftStatus.CLOSED && todayVN.equals(s.getShiftDate()))
-                .max(Comparator.comparing(Shift::getPlannedStart));
+                .max(Comparator.comparing(Shift::getPlannedStart, Comparator.nullsLast(Comparator.naturalOrder())));
 
         String shiftLabel = todayClosedShift.map(s -> formatShiftLabel(s) + " (Đã đóng)").orElse(null);
         String shiftStatus = todayClosedShift.map(s -> s.getStatus().name()).orElse(null);
-        return attendanceMapper.toKioskDto(user, isCheckedIn, false, shiftLabel, shiftStatus, pinLocked, pinLocked ? pinLockedUntil : null);
+        Integer shiftId = todayClosedShift.map(Shift::getId).orElse(null);
+        return attendanceMapper.toKioskDto(
+                user,
+                false,
+                false,
+                shiftId,
+                shiftLabel,
+                shiftStatus,
+                pinLocked,
+                pinLocked ? pinLockedUntil : null,
+                false,
+                flaggedForgot);
+    }
+
+    private Shift resolveShiftForCheckIn(User user, Integer branchId, Integer requestedShiftId, Instant now, LocalDate todayVN) {
+        List<Shift> assigned = loadAssignedShifts(user.getId(), branchId, todayVN.minusDays(1));
+        if (requestedShiftId != null) {
+            return assigned.stream()
+                    .filter(s -> s.getId().equals(requestedShiftId))
+                    .findFirst()
+                    .orElseGet(() -> shiftRepository.findById(requestedShiftId)
+                            .filter(s -> branchId.equals(s.getBranchId()))
+                            .orElseThrow(() -> new NotFoundException("ca làm việc")));
+        }
+        Optional<Attendance> openOpt = attendanceRepository
+                .findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(user.getId());
+        if (openOpt.isPresent()) {
+            Optional<Shift> nextShiftOpt = findNextShiftForEmployee(assigned, openOpt.get(), now, todayVN);
+            if (nextShiftOpt.isPresent()) {
+                return nextShiftOpt.get();
+            }
+        }
+        return pickBestShift(assigned, s -> isEligibleForCheckIn(s, now, todayVN), now)
+                .orElseThrow(() -> new BusinessRuleException(
+                        BusinessErrorCode.SHIFT_ASSIGNMENT_REQUIRED,
+                        "Nhân viên " + user.getFullName() + " chưa được phân công ca làm việc phù hợp hôm nay nên không thể check-in."));
+    }
+
+    private void autoCompletePreviousAttendance(Attendance oldAtt, Shift nextShift, Instant now) {
+        Instant autoOutTime = now;
+        if (oldAtt.getShiftId() != null) {
+            Shift oldShift = shiftRepository.findById(oldAtt.getShiftId()).orElse(null);
+            if (oldShift != null && oldShift.getPlannedEnd() != null && oldShift.getPlannedEnd().isBefore(now)) {
+                autoOutTime = oldShift.getPlannedEnd();
+            }
+        }
+        if (autoOutTime.isBefore(oldAtt.getCheckInTime())) {
+            autoOutTime = now;
+        }
+        long workedMinutes = AttendanceCalculator.calculateWorkedMinutes(oldAtt.getCheckInTime(), autoOutTime);
+        oldAtt.setCheckOutTime(autoOutTime);
+        oldAtt.setWorkedMinutes(workedMinutes);
+        oldAtt.setStatus(AttendanceStatus.COMPLETED);
+        oldAtt.setFlaggedForgotCheckout(Boolean.TRUE);
+        String note = "Tự động check-out khi vào ca tiếp theo #" + (nextShift != null ? nextShift.getId() : "");
+        oldAtt.setNotes(StringUtils.hasText(oldAtt.getNotes()) ? oldAtt.getNotes() + "; " + note : note);
+        attendanceRepository.save(oldAtt);
+        log.info("Tự động hoàn tất chấm công cũ ID={} cho nhân viên ID={} (tổng phút: {})",
+                oldAtt.getId(), oldAtt.getUserId(), workedMinutes);
+    }
+
+    private Optional<Shift> findNextShiftForEmployee(
+            List<Shift> assignedShifts,
+            Attendance openAtt,
+            Instant now,
+            LocalDate todayVN) {
+        if (openAtt == null || assignedShifts == null || assignedShifts.isEmpty()) {
+            return Optional.empty();
+        }
+        Integer currentShiftId = openAtt.getShiftId();
+        Shift currentShift = currentShiftId != null
+                ? assignedShifts.stream().filter(s -> s.getId().equals(currentShiftId)).findFirst()
+                        .orElseGet(() -> shiftRepository.findById(currentShiftId).orElse(null))
+                : null;
+
+        return assignedShifts.stream()
+                .filter(s -> s.getStatus() != ShiftStatus.CLOSED)
+                .filter(s -> currentShiftId == null || !s.getId().equals(currentShiftId))
+                .filter(s -> isSubsequentShift(s, currentShift, openAtt))
+                .filter(s -> isDueForShift(s, currentShift, openAtt, now, todayVN))
+                .min(Comparator
+                        .comparingInt((Shift s) -> shiftProximityRank(s, now))
+                        .thenComparing(Shift::getPlannedStart, Comparator.nullsLast(Comparator.naturalOrder())));
+    }
+
+    private static boolean isSubsequentShift(Shift nextShift, Shift currentShift, Attendance openAtt) {
+        if (nextShift == null) return false;
+        if (nextShift.getShiftDate() != null && openAtt != null && openAtt.getWorkDate() != null) {
+            if (nextShift.getShiftDate().isAfter(openAtt.getWorkDate())) {
+                return true;
+            }
+        }
+        if (currentShift != null && currentShift.getPlannedStart() != null && nextShift.getPlannedStart() != null) {
+            return nextShift.getPlannedStart().isAfter(currentShift.getPlannedStart());
+        }
+        if (openAtt != null && openAtt.getCheckInTime() != null && nextShift.getPlannedStart() != null) {
+            return nextShift.getPlannedStart().isAfter(openAtt.getCheckInTime())
+                    || (currentShift != null && currentShift.getPlannedEnd() != null && !nextShift.getPlannedStart().isBefore(currentShift.getPlannedEnd()));
+        }
+        return true;
+    }
+
+    private static boolean isDueForShift(Shift nextShift, Shift currentShift, Attendance openAtt, Instant now, LocalDate todayVN) {
+        if (nextShift.getStatus() == ShiftStatus.OPEN) {
+            return true;
+        }
+        if (nextShift.getPlannedStart() != null && !now.isBefore(nextShift.getPlannedStart().minus(EARLY_OPEN_GRACE))) {
+            return true;
+        }
+        if (currentShift != null && currentShift.getPlannedEnd() != null && now.isAfter(currentShift.getPlannedEnd())) {
+            return true;
+        }
+        if (openAtt != null && openAtt.getCheckInTime() != null) {
+            LocalDate checkInDate = DateTimeUtil.toVNDate(openAtt.getCheckInTime());
+            if (checkInDate.isBefore(todayVN)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static int shiftProximityRank(Shift s, Instant now) {
+        if (s.getPlannedStart() == null || s.getPlannedEnd() == null) {
+            return 2;
+        }
+        Instant startWindow = s.getPlannedStart().minus(EARLY_OPEN_GRACE);
+        Instant endWindow = s.getPlannedEnd().plus(OVERNIGHT_GRACE);
+        if (!now.isBefore(startWindow) && !now.isAfter(endWindow)) {
+            return 0;
+        }
+        if (now.isBefore(startWindow)) {
+            return 1;
+        }
+        return 2;
+    }
+
+    private static boolean isNewerShiftThanAttendance(Shift newShift, Attendance openAtt, Instant now) {
+        if (newShift == null || openAtt == null) {
+            return false;
+        }
+        if (openAtt.getShiftId() != null && !openAtt.getShiftId().equals(newShift.getId())) {
+            return true;
+        }
+        if (newShift.getPlannedStart() != null && openAtt.getCheckInTime().isBefore(newShift.getPlannedStart())) {
+            return true;
+        }
+        return false;
     }
 
     private void requireAssignedShiftForCheckIn(User user, Integer branchId, Instant now, LocalDate todayVN) {
@@ -372,12 +730,13 @@ public class AttendanceServiceImpl implements AttendanceService {
                 .toList();
     }
 
-    private static Optional<Shift> pickBestShift(List<Shift> shifts, java.util.function.Predicate<Shift> filter) {
+    private static Optional<Shift> pickBestShift(List<Shift> shifts, java.util.function.Predicate<Shift> filter, Instant now) {
         return shifts.stream()
                 .filter(filter)
                 .min(Comparator
-                        .comparingInt((Shift s) -> statusPriority(s.getStatus()))
-                        .thenComparing(Shift::getPlannedStart));
+                        .comparingInt((Shift s) -> shiftProximityRank(s, now))
+                        .thenComparingInt((Shift s) -> statusPriority(s.getStatus()))
+                        .thenComparing(Shift::getPlannedStart, Comparator.nullsLast(Comparator.naturalOrder())));
     }
 
     private static int statusPriority(ShiftStatus status) {

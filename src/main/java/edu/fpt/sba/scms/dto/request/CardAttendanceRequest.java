@@ -14,6 +14,9 @@ public record CardAttendanceRequest(
         @NotNull(message = "Chi nhánh không được để trống")
         Integer branchId,
 
+        @Schema(description = "ID ca làm việc (tùy chọn; nếu để trống hệ thống sẽ tự phân giải ca phù hợp)")
+        Integer shiftId,
+
         @Schema(description = "Ghi chú (nếu có)")
         String notes
 ) {

@@ -16,6 +16,26 @@ public interface AttendanceRepository extends JpaRepository<Attendance, Integer>
     Optional<Attendance> findFirstByUserIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(Integer userId);
 
     /**
+     * Tìm lượt check-in mở của nhân viên gắn với ca cụ thể.
+     */
+    Optional<Attendance> findFirstByUserIdAndShiftIdAndCheckOutTimeIsNullOrderByCheckInTimeDesc(Integer userId, Integer shiftId);
+
+    /**
+     * Tìm lượt chấm công gần nhất của nhân viên gắn với ca cụ thể.
+     */
+    Optional<Attendance> findFirstByUserIdAndShiftIdOrderByCheckInTimeDesc(Integer userId, Integer shiftId);
+
+    /**
+     * Danh sách tất cả lượt check-in đang mở của một ca làm việc.
+     */
+    List<Attendance> findAllByShiftIdAndCheckOutTimeIsNull(Integer shiftId);
+
+    /**
+     * Danh sách tất cả lượt check-in đang mở trên toàn hệ thống (phục vụ tự động quét quên check-out).
+     */
+    List<Attendance> findAllByCheckOutTimeIsNull();
+
+    /**
      * Danh sách tất cả lượt check-in đang mở tại một chi nhánh.
      */
     List<Attendance> findAllByBranchIdAndCheckOutTimeIsNull(Integer branchId);
