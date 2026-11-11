@@ -4,6 +4,10 @@ import edu.fpt.sba.scms.common.audit.AuditLogService;
 import edu.fpt.sba.scms.common.enums.AuditAction;
 import edu.fpt.sba.scms.common.enums.BusinessErrorCode;
 import edu.fpt.sba.scms.common.enums.ErrorCode;
+import edu.fpt.sba.scms.common.enums.Roles;
+import edu.fpt.sba.scms.common.enums.SecurityAlertSeverity;
+import edu.fpt.sba.scms.common.enums.SecurityAlertStatus;
+import edu.fpt.sba.scms.common.enums.SecurityAlertType;
 import edu.fpt.sba.scms.common.enums.StockTransactionType;
 import edu.fpt.sba.scms.common.enums.StocktakeStatus;
 import edu.fpt.sba.scms.common.exception.BusinessRuleException;
@@ -11,6 +15,7 @@ import edu.fpt.sba.scms.common.exception.ConflictException;
 import edu.fpt.sba.scms.common.exception.ForbiddenException;
 import edu.fpt.sba.scms.common.exception.NotFoundException;
 import edu.fpt.sba.scms.common.exception.ValidationException;
+import edu.fpt.sba.scms.common.util.MoneyUtil;
 import edu.fpt.sba.scms.dto.request.CreateStocktakeSessionRequest;
 import edu.fpt.sba.scms.dto.request.SubmitStocktakeCountsRequest;
 import edu.fpt.sba.scms.dto.response.StocktakeReconciliationDto;
@@ -18,6 +23,7 @@ import edu.fpt.sba.scms.dto.response.StocktakeSessionDto;
 import edu.fpt.sba.scms.model.Branch;
 import edu.fpt.sba.scms.model.Ingredient;
 import edu.fpt.sba.scms.model.Inventory;
+import edu.fpt.sba.scms.model.SecurityAlert;
 import edu.fpt.sba.scms.model.StockTransaction;
 import edu.fpt.sba.scms.model.Stocktake;
 import edu.fpt.sba.scms.model.StocktakeLine;
@@ -25,7 +31,9 @@ import edu.fpt.sba.scms.model.StocktakeLineId;
 import edu.fpt.sba.scms.model.User;
 import edu.fpt.sba.scms.repository.BranchRepository;
 import edu.fpt.sba.scms.repository.InventoryRepository;
+import edu.fpt.sba.scms.repository.SecurityAlertRepository;
 import edu.fpt.sba.scms.repository.StockTransactionRepository;
+import edu.fpt.sba.scms.repository.StocktakeLineRepository;
 import edu.fpt.sba.scms.repository.StocktakeRepository;
 import edu.fpt.sba.scms.repository.UserRepository;
 import edu.fpt.sba.scms.security.BranchContext;
@@ -61,16 +69,31 @@ public class StocktakeServiceImpl implements StocktakeService {
     private static final String ENTITY_STOCKTAKE = "stocktake";
 
     private final StocktakeRepository stocktakeRepository;
+    private final StocktakeLineRepository stocktakeLineRepository;
     private final InventoryRepository inventoryRepository;
     private final StockTransactionRepository stockTransactionRepository;
     private final BranchRepository branchRepository;
     private final UserRepository userRepository;
     private final AuditLogService auditLogService;
+    private final SecurityAlertRepository securityAlertRepository;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public StocktakeSessionDto createStocktakeSession(CreateStocktakeSessionRequest request) {
-        Integer branchId = BranchContext.requireBranchId();
+        return createStocktakeSession(null, request);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public StocktakeSessionDto createStocktakeSession(Integer branchIdParam, CreateStocktakeSessionRequest request) {
+        Integer branchId = branchIdParam != null
+                ? branchIdParam
+                : BranchContext.current().map(BranchContext.Info::branchId).orElse(null);
+
+        if (branchId == null) {
+            branchId = resolveBranchIdForUser();
+        }
+
         Branch branch = branchRepository.findById(branchId)
                 .orElseThrow(() -> new NotFoundException("chi nhánh"));
 
@@ -101,7 +124,7 @@ public class StocktakeServiceImpl implements StocktakeService {
                 .build();
         Stocktake saved = stocktakeRepository.save(stocktake);
 
-        // Snapshot tức thời book_quantity từ inventory vào stocktake_line
+        // Snapshot tức thời book_quantity từ inventory vào stocktake_line (Rule 3)
         List<StocktakeLine> lines = inventories.stream().map(inv -> StocktakeLine.builder()
                 .id(new StocktakeLineId(saved.getId(), inv.getIngredient().getId()))
                 .stocktake(saved)
@@ -137,26 +160,281 @@ public class StocktakeServiceImpl implements StocktakeService {
                 )
         );
 
-        return toSessionDto(updated, roundType, witnessName);
+        return toSessionDto(updated, roundType, witnessName, false);
     }
 
     @Override
     @Transactional(readOnly = true)
     public StocktakeSessionDto getActiveStocktakeSession() {
-        Integer branchId = BranchContext.requireBranchId();
+        return getActiveStocktakeSession(null);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public StocktakeSessionDto getActiveStocktakeSession(Integer branchIdParam) {
+        Integer branchId = branchIdParam != null
+                ? branchIdParam
+                : BranchContext.current().map(BranchContext.Info::branchId).orElse(null);
+        if (branchId == null) {
+            branchId = resolveBranchIdForUser();
+        }
+
+        // Rule 1: Bảo mật kiểm kê mù - Khi session đang OPEN, bookQuantity trả về null
         return stocktakeRepository.findByBranch_IdAndStatus(branchId, StocktakeStatus.OPEN)
-                .map(st -> toSessionDto(st, null, null))
+                .map(st -> toSessionDto(st, null, null, true))
                 .orElse(null);
     }
 
     @Override
     @Transactional(readOnly = true)
     public StocktakeSessionDto getStocktakeSession(Long stocktakeId) {
-        Integer branchId = BranchContext.requireBranchId();
+        Integer branchId = BranchContext.current().map(BranchContext.Info::branchId).orElseGet(this::resolveBranchIdForUser);
         Stocktake stocktake = stocktakeRepository.findByIdAndBranch_Id(stocktakeId, branchId)
                 .orElseThrow(() -> new NotFoundException(ErrorCode.STOCKTAKE_NOT_FOUND,
                         "Không tìm thấy đợt kiểm kê tương ứng."));
-        return toSessionDto(stocktake, null, null);
+        boolean hideBook = stocktake.getStatus() == StocktakeStatus.OPEN;
+        return toSessionDto(stocktake, null, null, hideBook);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public StocktakeReconciliationDto reconcileStocktake(Long stocktakeId, SubmitStocktakeCountsRequest request) {
+        validateAdjustRequest(request);
+
+        // Rule 2: Nguyên tắc 4 mắt - Bắt buộc có witnessName (@NotBlank)
+        if (request.witnessName() == null || request.witnessName().trim().isBlank()) {
+            throw ValidationException.single("witnessName",
+                    "Họ tên Barista làm chứng là bắt buộc theo nguyên tắc 4 mắt (Rule 2).");
+        }
+        String witnessName = request.witnessName().trim();
+
+        Integer branchId = BranchContext.current().map(BranchContext.Info::branchId).orElseGet(this::resolveBranchIdForUser);
+        User currentUser = resolveCurrentUser();
+
+        Stocktake stocktake = stocktakeRepository.findByIdAndBranch_Id(stocktakeId, branchId)
+                .orElseThrow(() -> new NotFoundException(ErrorCode.STOCKTAKE_NOT_FOUND,
+                        "Không tìm thấy đợt kiểm kê tương ứng."));
+
+        if (stocktake.getStatus() != StocktakeStatus.OPEN) {
+            throw new ConflictException(ErrorCode.STOCKTAKE_ALREADY_CLOSED,
+                    "Đợt kiểm kê này đã được cân đối hoặc đóng trước đó (Trạng thái: " + stocktake.getStatus() + ").");
+        }
+
+        // AF-03: Kiểm tra đủ số lượng đếm của toàn bộ danh mục kiểm kê
+        Set<Long> submittedIngredientIds = request.counts().stream()
+                .map(SubmitStocktakeCountsRequest.CountItem::ingredientId)
+                .collect(Collectors.toSet());
+        for (StocktakeLine line : stocktake.getLines()) {
+            if (!submittedIngredientIds.contains(line.getIngredient().getId())) {
+                throw ValidationException.single("counts",
+                        "Vui lòng nhập đủ số lượng đếm của toàn bộ danh mục kiểm kê.");
+            }
+        }
+
+        Map<Long, StocktakeLine> lineMap = stocktake.getLines().stream()
+                .collect(Collectors.toMap(l -> l.getIngredient().getId(), Function.identity()));
+
+        Instant now = Instant.now();
+        int discrepancyCount = 0;
+        int matchedCount = 0;
+        BigDecimal netVarianceValue = BigDecimal.ZERO;
+        List<StocktakeReconciliationDto.AdjustmentDetail> details = new ArrayList<>();
+        String slipCode = formatSlipCode(stocktake);
+
+        // Tính toán chênh lệch từng nguyên liệu
+        for (SubmitStocktakeCountsRequest.CountItem countItem : request.counts()) {
+            StocktakeLine line = lineMap.get(countItem.ingredientId());
+            if (line == null) {
+                continue;
+            }
+
+            BigDecimal counted = countItem.countedQuantity();
+            BigDecimal book = line.getBookQuantity() != null ? line.getBookQuantity() : BigDecimal.ZERO;
+            BigDecimal variance = counted.subtract(book);
+
+            line.setCountedQuantity(counted);
+            line.setVariance(variance);
+
+            Ingredient ingredient = line.getIngredient();
+            BigDecimal unitCost = ingredient.getUnitCost() != null ? ingredient.getUnitCost() : BigDecimal.ZERO;
+            BigDecimal varianceFinancialValue = variance.multiply(unitCost).setScale(2, RoundingMode.HALF_UP);
+            netVarianceValue = netVarianceValue.add(varianceFinancialValue);
+
+            String statusStr;
+            if (variance.compareTo(BigDecimal.ZERO) == 0) {
+                matchedCount++;
+                statusStr = "MATCHED";
+            } else {
+                discrepancyCount++;
+                statusStr = variance.compareTo(BigDecimal.ZERO) < 0 ? "DEFICIT" : "SURPLUS";
+            }
+
+            details.add(new StocktakeReconciliationDto.AdjustmentDetail(
+                    ingredient.getId(),
+                    ingredient.getName(),
+                    ingredient.getBaseUnit(),
+                    book,
+                    counted,
+                    variance,
+                    unitCost,
+                    varianceFinancialValue,
+                    statusStr,
+                    countItem.notes()
+            ));
+        }
+
+        // Rule 4: Ngưỡng dung sai 50.000 VNĐ
+        BigDecimal TOLERANCE = new BigDecimal("50000");
+        boolean isWithinTolerance = netVarianceValue.abs().compareTo(TOLERANCE) <= 0;
+
+        if (isWithinTolerance) {
+            // TRƯỜNG HỢP A: Trong dung sai <= 50.000 VNĐ -> Cho phép cân đối kho
+            for (SubmitStocktakeCountsRequest.CountItem countItem : request.counts()) {
+                StocktakeLine line = lineMap.get(countItem.ingredientId());
+                if (line == null) continue;
+
+                BigDecimal counted = countItem.countedQuantity();
+                BigDecimal variance = line.getVariance();
+                Ingredient ingredient = line.getIngredient();
+                BigDecimal unitsPerPack = ingredient.getUnitsPerPack() != null && ingredient.getUnitsPerPack().compareTo(BigDecimal.ZERO) > 0
+                        ? ingredient.getUnitsPerPack() : BigDecimal.ONE;
+
+                // Khóa dòng tồn kho chống tranh chấp
+                Inventory inventory = inventoryRepository.findForUpdate(branchId, countItem.ingredientId())
+                        .orElseThrow(() -> new NotFoundException(ErrorCode.INVENTORY_NOT_FOUND,
+                                "Không tìm thấy dữ liệu tồn kho của nguyên liệu ID: " + countItem.ingredientId()));
+
+                inventory.setCurrentQtyBase(counted);
+                inventory.recalculateStockAndFlag(unitsPerPack);
+                inventoryRepository.save(inventory);
+
+                if (variance.compareTo(BigDecimal.ZERO) != 0) {
+                    BigDecimal qtyPacks = variance.divide(unitsPerPack, 4, RoundingMode.HALF_UP);
+                    BigDecimal unitCost = ingredient.getUnitCost() != null ? ingredient.getUnitCost() : BigDecimal.ZERO;
+                    BigDecimal lineLoss = variance.abs().multiply(unitCost).setScale(2, RoundingMode.HALF_UP);
+                    String itemNotes = countItem.notes() != null && !countItem.notes().isBlank()
+                            ? countItem.notes().trim() : (variance.compareTo(BigDecimal.ZERO) < 0 ? "DEFICIT" : "SURPLUS");
+                    String txReason = String.format("Cân đối kiểm kê %s (%s %s). Người làm chứng: %s. Ghi chú: %s",
+                            slipCode, variance, ingredient.getBaseUnit(), witnessName, itemNotes);
+                    if (txReason.length() > 500) {
+                        txReason = txReason.substring(0, 500);
+                    }
+
+                    StockTransaction adjustTx = StockTransaction.builder()
+                            .branch(stocktake.getBranch())
+                            .ingredient(ingredient)
+                            .type(StockTransactionType.ADJUST)
+                            .shiftId(null)
+                            .stocktakeId(stocktake.getId())
+                            .createdBy(currentUser)
+                            .createdAt(now)
+                            .cartons(null)
+                            .looseUnits(null)
+                            .purchasePrice(unitCost)
+                            .lineTotal(lineLoss)
+                            .quantityPacks(qtyPacks)
+                            .quantityBase(variance)
+                            .reason(txReason)
+                            .evidenceImageUrl(null)
+                            .build();
+                    stockTransactionRepository.save(adjustTx);
+                }
+            }
+
+            stocktake.setStatus(StocktakeStatus.ADJUSTED);
+            stocktake.setClosedAt(now);
+            stocktakeRepository.save(stocktake);
+            stocktakeLineRepository.saveAll(stocktake.getLines());
+
+            auditLogService.log(
+                    AuditAction.STOCKTAKE_ADJUST,
+                    ENTITY_STOCKTAKE,
+                    stocktake.getId(),
+                    null,
+                    Map.of(
+                            "stocktakeId", stocktake.getId(),
+                            "slipCode", slipCode,
+                            "witnessName", witnessName,
+                            "matchedCount", matchedCount,
+                            "discrepancyCount", discrepancyCount,
+                            "netVarianceValue", netVarianceValue,
+                            "toleranceStatus", "WITHIN_TOLERANCE",
+                            "summary", String.format("Cân đối kiểm kê %s hợp lệ (trong dung sai <= 50.000đ): %d món khớp, %d món lệch. Chênh lệch ròng: %s VNĐ. Người làm chứng: %s",
+                                    slipCode, matchedCount, discrepancyCount, MoneyUtil.format(netVarianceValue), witnessName)
+                    )
+            );
+
+            return new StocktakeReconciliationDto(
+                    stocktake.getId(),
+                    slipCode,
+                    "BALANCED",
+                    now,
+                    stocktake.getLines().size(),
+                    matchedCount,
+                    discrepancyCount,
+                    netVarianceValue,
+                    details
+            );
+        } else {
+            // TRƯỜNG HỢP B: Vượt dung sai > 50.000 VNĐ -> KHÓA cân đối, chuyển DISCREPANCY_ALERT, phát SecurityAlert
+            stocktake.setStatus(StocktakeStatus.DISCREPANCY_ALERT);
+            stocktake.setClosedAt(now);
+            stocktakeRepository.save(stocktake);
+            stocktakeLineRepository.saveAll(stocktake.getLines());
+
+            Branch branch = stocktake.getBranch();
+            SecurityAlert alert = SecurityAlert.builder()
+                    .branchId(branchId)
+                    .branchName(branch.getName())
+                    .alertType(SecurityAlertType.STOCKTAKE_DISCREPANCY)
+                    .severity(SecurityAlertSeverity.HIGH)
+                    .status(SecurityAlertStatus.ACTIVE)
+                    .failureCount(1)
+                    .title("Cảnh báo chênh lệch kiểm kê ca vượt ngưỡng 50.000 VNĐ (" + slipCode + ")")
+                    .message(String.format("Phiên kiểm kê %s tại chi nhánh %s bị lệch ròng %s VNĐ (vượt dung sai cho phép 50.000 VNĐ). Người kiểm kê: %s, Barista làm chứng: %s. Chênh lệch: %d món. Hệ thống đã khóa cân đối kho tự động, yêu cầu giải trình và lập biên bản bồi thường.",
+                            slipCode, branch.getName(), MoneyUtil.format(netVarianceValue),
+                            currentUser != null ? currentUser.getFullName() : "Quản lý quán",
+                            witnessName, discrepancyCount))
+                    .targetUserId(currentUser != null ? currentUser.getId() : null)
+                    .targetUserName(currentUser != null ? currentUser.getFullName() : null)
+                    .targetRole(currentUser != null && currentUser.getPosition() != null ? currentUser.getPosition().name() : Roles.BRANCH_MANAGER.code())
+                    .createdAt(now)
+                    .build();
+            securityAlertRepository.save(alert);
+
+            auditLogService.log(
+                    AuditAction.STOCKTAKE_ADJUST,
+                    ENTITY_STOCKTAKE,
+                    stocktake.getId(),
+                    null,
+                    Map.of(
+                            "stocktakeId", stocktake.getId(),
+                            "slipCode", slipCode,
+                            "witnessName", witnessName,
+                            "matchedCount", matchedCount,
+                            "discrepancyCount", discrepancyCount,
+                            "netVarianceValue", netVarianceValue,
+                            "toleranceStatus", "DISCREPANCY_EXCEEDED",
+                            "summary", String.format("CẢNH BÁO: Kiểm kê %s lệch ròng %s VNĐ vượt ngưỡng 50.000đ! Đã khóa cân đối và phát SecurityAlert HIGH lên COO.",
+                                    slipCode, MoneyUtil.format(netVarianceValue))
+                    )
+            );
+
+            log.warn("Kiểm kê {} vượt dung sai (|netVariance| = {} > 50.000 VNĐ). Khóa cân đối và kích hoạt SecurityAlert ID {}",
+                    slipCode, netVarianceValue, alert.getId());
+
+            return new StocktakeReconciliationDto(
+                    stocktake.getId(),
+                    slipCode,
+                    "DISCREPANCY_ALERT",
+                    now,
+                    stocktake.getLines().size(),
+                    matchedCount,
+                    discrepancyCount,
+                    netVarianceValue,
+                    details
+            );
+        }
     }
 
     @Override
@@ -345,6 +623,18 @@ public class StocktakeServiceImpl implements StocktakeService {
         return String.format("PKK-%s-%03d", dateStr, Math.max(1, seq));
     }
 
+    private Integer resolveBranchIdForUser() {
+        Integer branchId = BranchContext.current().map(BranchContext.Info::branchId).orElse(null);
+        if (branchId != null) {
+            return branchId;
+        }
+        User user = resolveCurrentUser();
+        if (user.getBranchId() != null) {
+            return user.getBranchId();
+        }
+        throw ValidationException.single("branchId", "Yêu cầu cung cấp mã chi nhánh.");
+    }
+
     private User resolveCurrentUser() {
         Integer userId = BranchContext.current().map(BranchContext.Info::userId).orElse(null);
         if (userId != null) {
@@ -366,6 +656,10 @@ public class StocktakeServiceImpl implements StocktakeService {
     }
 
     private StocktakeSessionDto toSessionDto(Stocktake stocktake, String overrideRoundType, String overrideWitness) {
+        return toSessionDto(stocktake, overrideRoundType, overrideWitness, false);
+    }
+
+    private StocktakeSessionDto toSessionDto(Stocktake stocktake, String overrideRoundType, String overrideWitness, boolean hideBookQuantity) {
         String slipCode = formatSlipCode(stocktake);
         String startedByName = stocktake.getStartedBy() != null
                 ? (stocktake.getStartedBy().getFullName() != null && !stocktake.getStartedBy().getFullName().isBlank()
@@ -377,9 +671,12 @@ public class StocktakeServiceImpl implements StocktakeService {
             Ingredient ing = line.getIngredient();
             BigDecimal unitsPerPack = ing.getUnitsPerPack() != null && ing.getUnitsPerPack().compareTo(BigDecimal.ZERO) > 0
                     ? ing.getUnitsPerPack() : BigDecimal.ONE;
-            BigDecimal bookPackUnits = line.getBookQuantity() != null
+
+            BigDecimal bookQty = hideBookQuantity ? null : line.getBookQuantity();
+            BigDecimal bookPackUnits = hideBookQuantity ? null : (line.getBookQuantity() != null
                     ? line.getBookQuantity().divide(unitsPerPack, 2, RoundingMode.HALF_UP)
-                    : BigDecimal.ZERO;
+                    : BigDecimal.ZERO);
+            BigDecimal variance = hideBookQuantity ? null : line.getVariance();
             String ingredientCode = String.format("ING-%03d", ing.getId());
 
             return new StocktakeSessionDto.StocktakeLineDto(
@@ -388,10 +685,10 @@ public class StocktakeServiceImpl implements StocktakeService {
                     ing.getName(),
                     ing.getPackUnit(),
                     ing.getBaseUnit(),
-                    line.getBookQuantity(),
+                    bookQty,
                     bookPackUnits,
                     line.getCountedQuantity(),
-                    line.getVariance()
+                    variance
             );
         }).toList();
 

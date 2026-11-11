@@ -38,8 +38,8 @@ public class Ingredient {
     @Column(name = "base_unit", length = 20, nullable = false)
     private String baseUnit; // 3. base_unit VARCHAR(20) NOT NULL (ml, g, can)
 
-    @Column(name = "pack_unit", length = 20)
-    private String packUnit; // 4. pack_unit VARCHAR(20) (carton, bag) - BR-40
+    @Column(name = "pack_unit", length = 50)
+    private String packUnit; // 4. pack_unit VARCHAR(50) (carton, bag) - BR-40
 
     @Column(name = "units_per_pack", precision = 19, scale = 4)
     private BigDecimal unitsPerPack; // 5. units_per_pack DECIMAL(19,4)

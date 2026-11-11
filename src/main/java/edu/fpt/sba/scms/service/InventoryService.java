@@ -8,7 +8,7 @@ import edu.fpt.sba.scms.dto.response.LowStockAlertDto;
 import java.util.List;
 
 /**
- * Service quản lý tồn kho và cảnh báo thiếu hàng (UC33).
+ * Service quản lý tồn kho và cảnh báo thiếu hàng (UC33, FEA-03: POS BOM Deduction).
  */
 public interface InventoryService {
 
@@ -24,5 +24,16 @@ public interface InventoryService {
 
     default List<LowStockAlertDto> getLowStockAlerts(Long explicitBranchId) {
         return getLowStockAlerts(explicitBranchId != null ? explicitBranchId.intValue() : null);
+    }
+
+    /**
+     * FEA-03: Khấu trừ tồn kho Quầy Bar tự động theo công thức pha chế (BOM) khi đơn hàng POS được thanh toán.
+     *
+     * @param orderId Mã đơn hàng vừa thanh toán
+     */
+    void deductStockForOrder(Long orderId);
+
+    default void deductStockForOrder(Integer orderId) {
+        deductStockForOrder(orderId != null ? Long.valueOf(orderId) : null);
     }
 }

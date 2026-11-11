@@ -10,9 +10,17 @@ import java.util.Optional;
 @Repository
 public interface IngredientRepository extends JpaRepository<Ingredient, Long> {
 
+    List<Ingredient> findAllByOrderByNameAsc();
+
     List<Ingredient> findAllByStatusOrderByNameAsc(String status);
 
     Optional<Ingredient> findByName(String name);
 
+    Optional<Ingredient> findByNameIgnoreCase(String name);
+
     boolean existsByName(String name);
+
+    boolean existsByNameIgnoreCase(String name);
+
+    boolean existsByNameIgnoreCaseAndIdNot(String name, Long id);
 }

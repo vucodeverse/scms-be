@@ -89,6 +89,9 @@ class StocktakeIT {
     @Autowired
     private PasswordEncoder passwordEncoder;
 
+    @Autowired
+    private edu.fpt.sba.scms.repository.SecurityAlertRepository securityAlertRepository;
+
     private Branch branch1;
     private Ingredient robustaCoffee;
     private Ingredient dalatMilk;
@@ -460,4 +463,142 @@ class StocktakeIT {
                         .content(objectMapper.writeValueAsString(negRequest)), bmToken))
                 .andExpect(status().isBadRequest());
     }
+
+    // ==========================================
+    // FEA-05 — KIỂM KÊ KHO MÙ 4 MẮT & CÂN ĐỐI CHÊNH LỆCH CA
+    // ==========================================
+
+    @Test
+    @DisplayName("FEA-05 TC-01: Rule 1 (Blind Count) - GET /api/v1/stocktake/active che giấu bookQuantity = null")
+    void fea05_blindCount_hidesBookQuantity() throws Exception {
+        String bmToken = createAndLoginBm(branch1, "bm_fea05_tc01");
+
+        mockMvc.perform(authed(post("/api/v1/stocktake/session").contentType(JSON)
+                        .content(objectMapper.writeValueAsString(new CreateStocktakeSessionRequest(
+                                "DAILY_CLOSING", "Barista FEA05", "Kiểm kê mù"))), bmToken))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(authed(get("/api/v1/stocktake/active"), bmToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("OPEN"))
+                .andExpect(jsonPath("$.data.lines[0].bookQuantity", is(nullValue())))
+                .andExpect(jsonPath("$.data.lines[1].bookQuantity", is(nullValue())));
+    }
+
+    @Test
+    @DisplayName("FEA-05 TC-02: Rule 2 (Nguyên tắc 4 mắt) - Thiếu witnessName ném 400 Bad Request")
+    void fea05_reconcile_missingWitnessName_returns400() throws Exception {
+        String bmToken = createAndLoginBm(branch1, "bm_fea05_tc02");
+
+        MvcResult openResult = mockMvc.perform(authed(post("/api/v1/stocktake/session").contentType(JSON)
+                        .content(objectMapper.writeValueAsString(new CreateStocktakeSessionRequest(
+                                "DAILY_CLOSING", null, "Chốt ca"))), bmToken))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        long stocktakeId = objectMapper.readTree(openResult.getResponse().getContentAsString())
+                .path("data").path("stocktakeId").asLong();
+
+        // witnessName = null
+        SubmitStocktakeCountsRequest noWitness = new SubmitStocktakeCountsRequest(null, List.of(
+                new SubmitStocktakeCountsRequest.CountItem(robustaCoffee.getId(), new BigDecimal("32000.0"), "Khớp"),
+                new SubmitStocktakeCountsRequest.CountItem(dalatMilk.getId(), new BigDecimal("98.0"), "Khớp")
+        ));
+
+        mockMvc.perform(authed(post("/api/v1/stocktake/" + stocktakeId + "/reconcile").contentType(JSON)
+                        .content(objectMapper.writeValueAsString(noWitness)), bmToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.fieldErrors[0].field").value("witnessName"));
+    }
+
+    @Test
+    @DisplayName("FEA-05 TC-03: Rule 4 Case A - Trong dung sai <= 50.000 VNĐ -> Cân đối kho BALANCED, cập nhật tồn, sinh StockTransaction ADJUST")
+    void fea05_reconcile_withinTolerance_success() throws Exception {
+        String bmToken = createAndLoginBm(branch1, "bm_fea05_tc03");
+
+        MvcResult openResult = mockMvc.perform(authed(post("/api/v1/stocktake/session").contentType(JSON)
+                        .content(objectMapper.writeValueAsString(new CreateStocktakeSessionRequest(
+                                "DAILY_CLOSING", "Barista Làm Chứng", "Chốt ca"))), bmToken))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        long stocktakeId = objectMapper.readTree(openResult.getResponse().getContentAsString())
+                .path("data").path("stocktakeId").asLong();
+
+        // Sổ sách cà phê: 32000g -> Đếm thực tế: 31900g (Lệch -100g * 150 VNĐ = -15.000 VNĐ <= 50.000 VNĐ)
+        // Sữa tươi: 98 hộp -> Đếm thực tế: 98 hộp (Khớp)
+        SubmitStocktakeCountsRequest validRequest = new SubmitStocktakeCountsRequest("Trần Văn Barista", List.of(
+                new SubmitStocktakeCountsRequest.CountItem(robustaCoffee.getId(), new BigDecimal("31900.0"), "Hao hụt cối xay 100g"),
+                new SubmitStocktakeCountsRequest.CountItem(dalatMilk.getId(), new BigDecimal("98.0"), "Khớp 100%")
+        ));
+
+        mockMvc.perform(authed(post("/api/v1/stocktake/" + stocktakeId + "/reconcile").contentType(JSON)
+                        .content(objectMapper.writeValueAsString(validRequest)), bmToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.status").value("BALANCED"))
+                .andExpect(jsonPath("$.data.netVarianceValue").value(-15000.0))
+                .andExpect(jsonPath("$.data.matchedCount").value(1))
+                .andExpect(jsonPath("$.data.discrepancyCount").value(1));
+
+        // Tồn kho được cân đè
+        Inventory inv = inventoryRepository.findByBranchIdAndIngredientId(branch1.getId(), robustaCoffee.getId()).orElseThrow();
+        assertThat(inv.getCurrentQtyBase()).isEqualByComparingTo("31900.0000");
+
+        // Giao dịch ADJUST được sinh ra
+        List<StockTransaction> txs = stockTransactionRepository.findAll().stream()
+                .filter(t -> t.getType() == StockTransactionType.ADJUST && stocktakeId == (t.getStocktakeId() != null ? t.getStocktakeId() : 0))
+                .toList();
+        assertThat(txs).hasSize(1);
+        assertThat(txs.get(0).getQuantityBase()).isEqualByComparingTo("-100.0000");
+    }
+
+    @Test
+    @DisplayName("FEA-05 TC-04: Rule 4 Case B - Vượt dung sai > 50.000 VNĐ -> Khóa cân đối, DISCREPANCY_ALERT, không sửa kho, sinh SecurityAlert HIGH")
+    void fea05_reconcile_exceededTolerance_locksAdjustAndCreatesSecurityAlert() throws Exception {
+        String bmToken = createAndLoginBm(branch1, "bm_fea05_tc04");
+
+        MvcResult openResult = mockMvc.perform(authed(post("/api/v1/stocktake/session").contentType(JSON)
+                        .content(objectMapper.writeValueAsString(new CreateStocktakeSessionRequest(
+                                "DAILY_CLOSING", "Barista Làm Chứng", "Chốt ca"))), bmToken))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+        long stocktakeId = objectMapper.readTree(openResult.getResponse().getContentAsString())
+                .path("data").path("stocktakeId").asLong();
+
+        // Sổ sách cà phê: 32000g -> Đếm thực tế: 30000g (Lệch -2000g * 150 VNĐ = -300.000 VNĐ > 50.000 VNĐ)
+        // Sữa tươi: 98 hộp -> Đếm: 98 hộp
+        SubmitStocktakeCountsRequest alertRequest = new SubmitStocktakeCountsRequest("Trần Văn Barista", List.of(
+                new SubmitStocktakeCountsRequest.CountItem(robustaCoffee.getId(), new BigDecimal("30000.0"), "Mất 2kg cà phê"),
+                new SubmitStocktakeCountsRequest.CountItem(dalatMilk.getId(), new BigDecimal("98.0"), "Khớp 100%")
+        ));
+
+        mockMvc.perform(authed(post("/api/v1/stocktake/" + stocktakeId + "/reconcile").contentType(JSON)
+                        .content(objectMapper.writeValueAsString(alertRequest)), bmToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.status").value("DISCREPANCY_ALERT"))
+                .andExpect(jsonPath("$.data.netVarianceValue").value(-300000.0));
+
+        // Tồn kho KHÔNG bị ghi đè (giữ nguyên 32000g)
+        Inventory inv = inventoryRepository.findByBranchIdAndIngredientId(branch1.getId(), robustaCoffee.getId()).orElseThrow();
+        assertThat(inv.getCurrentQtyBase()).isEqualByComparingTo("32000.0000");
+
+        // KHÔNG sinh bản ghi ADJUST
+        List<StockTransaction> txs = stockTransactionRepository.findAll().stream()
+                .filter(t -> t.getType() == StockTransactionType.ADJUST && stocktakeId == (t.getStocktakeId() != null ? t.getStocktakeId() : 0))
+                .toList();
+        assertThat(txs).isEmpty();
+
+        // Trạng thái phiên kiểm kê là DISCREPANCY_ALERT
+        Stocktake finalStocktake = stocktakeRepository.findById(stocktakeId).orElseThrow();
+        assertThat(finalStocktake.getStatus()).isEqualTo(StocktakeStatus.DISCREPANCY_ALERT);
+
+        // SecurityAlert được sinh ra với severity = HIGH
+        List<edu.fpt.sba.scms.model.SecurityAlert> alerts = securityAlertRepository.findAll();
+        assertThat(alerts).anyMatch(a -> a.getSeverity() == edu.fpt.sba.scms.common.enums.SecurityAlertSeverity.HIGH
+                && a.getTitle().contains("50.000 VNĐ"));
+    }
 }
+

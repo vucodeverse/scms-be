@@ -59,6 +59,7 @@ import edu.fpt.sba.scms.repository.VoucherProductRepository;
 import edu.fpt.sba.scms.repository.VoucherRepository;
 import edu.fpt.sba.scms.security.BranchContext;
 import edu.fpt.sba.scms.security.principal.UserPrincipal;
+import edu.fpt.sba.scms.service.InventoryService;
 import edu.fpt.sba.scms.service.OrderService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -100,6 +101,7 @@ public class OrderServiceImpl implements OrderService {
     private final ToppingRepository toppingRepository;
     private final AuditLogService auditLogService;
     private final OrderMapper orderMapper;
+    private final InventoryService inventoryService;
 
     private record ResolvedTopping(Topping topping, BigDecimal extraPrice) {
     }
@@ -586,6 +588,65 @@ public class OrderServiceImpl implements OrderService {
         log.info("Thu ngân hủy đơn hàng ID={} lý do: {}", cancelledOrder.getId(), cancelledOrder.getCancelReason());
 
         return orderMapper.toDto(cancelledOrder);
+    }
+
+    /**
+     * FEA-03: Thu ngân bấm thanh toán đơn hàng POS.
+     * Cập nhật trạng thái đơn hàng sang PAID và tự động gọi trừ tồn quầy bar theo BOM (FEA-03).
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public OrderDetailDto payOrder(Integer orderId, UserPrincipal principal) {
+        Order order = orderRepository.findByIdForUpdate(orderId)
+                .orElseThrow(() -> new NotFoundException("đơn hàng"));
+
+        BranchContext.resolveBranchScope(order.getBranchId());
+
+        if (order.isPaid()) {
+            throw new BusinessRuleException(BusinessErrorCode.ORDER_FROZEN,
+                    "Đơn hàng đã được thanh toán trước đó.");
+        }
+
+        if (order.isCancelled()) {
+            throw new BusinessRuleException(BusinessErrorCode.ORDER_FROZEN,
+                    "Đơn hàng đã bị hủy, không thể thanh toán.");
+        }
+
+        Instant now = Instant.now();
+        order.setStatus(OrderStatus.PAID);
+        order.setPaidAt(now);
+        if (principal != null && principal.userId() != null) {
+            order.setCashierId(principal.userId());
+        }
+        Order savedOrder = orderRepository.save(order);
+
+        // FEA-03: Khấu trừ tồn kho Quầy Bar tự động theo công thức pha chế (BOM) khi bán POS
+        try {
+            inventoryService.deductStockForOrder(Long.valueOf(savedOrder.getId()));
+        } catch (Exception e) {
+            // Rule 1: Non-blocking POS - TUYỆT ĐỐI KHÔNG rollback đơn hàng hay chặn khách
+            log.error("FEA-03: Lỗi khi tự động trừ kho BOM cho đơn hàng ID={}: {}", savedOrder.getId(), e.getMessage(), e);
+        }
+
+        auditLogService.log(AuditAction.ORDER_PAID, "orders", savedOrder.getId(),
+                Map.of("status", OrderStatus.PENDING.name()),
+                Map.of("status", OrderStatus.PAID.name()));
+
+        log.info("Thu ngân {} thanh toán thành công đơn hàng ID={}, mã={}",
+                principal != null ? principal.username() : "CASHIER", savedOrder.getId(), savedOrder.getReceiptNo());
+
+        return buildOrderDetailDto(savedOrder);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public OrderDetailDto payOrder(Integer orderId) {
+        return payOrder(orderId, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public void payOrder(Long orderId) {
+        if (orderId != null) {
+            payOrder(orderId.intValue(), null);
+        }
     }
 
     private OrderDetailDto buildOrderDetailDto(Order order) {

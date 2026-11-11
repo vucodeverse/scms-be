@@ -9,7 +9,7 @@ public record IngredientDto(
         @Schema(description = "Mã nguyên vật liệu", example = "1")
         Long id,
 
-        @Schema(description = "Tên nguyên vật liệu", example = "Cà phê Robusta")
+        @Schema(description = "Tên nguyên vật liệu", example = "Hạt Cà phê Robusta")
         String name,
 
         @Schema(description = "Đơn vị cơ sở", example = "g")
@@ -21,7 +21,7 @@ public record IngredientDto(
         @Schema(description = "Số lượng đơn vị cơ sở trong 1 kiện đóng gói", example = "5000.0000")
         BigDecimal unitsPerPack,
 
-        @Schema(description = "Đơn giá cơ sở", example = "120.00")
+        @Schema(description = "Đơn giá cơ sở", example = "150.00")
         BigDecimal unitCost,
 
         @Schema(description = "Trạng thái", example = "ACTIVE")

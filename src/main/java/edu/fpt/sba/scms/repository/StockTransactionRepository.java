@@ -43,6 +43,8 @@ public interface StockTransactionRepository extends JpaRepository<StockTransacti
 
     List<StockTransaction> findByBranch_IdOrderByCreatedAtDesc(Integer branchId);
 
+    List<StockTransaction> findByReasonContainingOrderByCreatedAtDesc(String reasonPattern);
+
     default boolean existsByBranchIdAndInvoiceRef(Integer branchId, String invoiceRef) {
         if (invoiceRef == null || invoiceRef.isBlank()) {
             return false;

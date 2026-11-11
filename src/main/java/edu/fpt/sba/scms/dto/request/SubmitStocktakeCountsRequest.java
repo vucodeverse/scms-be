@@ -11,11 +11,19 @@ import java.math.BigDecimal;
 import java.util.List;
 
 public record SubmitStocktakeCountsRequest(
+        @Schema(description = "Họ tên Barista ký làm chứng đếm 4 mắt (Rule 2: bắt buộc)", example = "Nguyễn Văn Barista")
+        @Size(max = 100, message = "Tên người làm chứng tối đa 100 ký tự")
+        String witnessName,
+
         @Schema(description = "Danh sách số đếm thực tế của các nguyên liệu kiểm kê")
         @NotEmpty(message = "Danh sách số đếm thực tế không được để trống")
         @Valid
         List<CountItem> counts
 ) {
+    public SubmitStocktakeCountsRequest(List<CountItem> counts) {
+        this(null, counts);
+    }
+
     public record CountItem(
             @Schema(description = "Mã ID của nguyên vật liệu", example = "5")
             @NotNull(message = "Mã nguyên vật liệu không được để trống")

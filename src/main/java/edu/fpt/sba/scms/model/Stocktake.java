@@ -61,7 +61,7 @@ public class Stocktake {
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", length = 20, nullable = false)
-    private StocktakeStatus status; // 6. status VARCHAR(20) NOT NULL (OPEN / ADJUSTED / CLOSED / CANCELLED)
+    private StocktakeStatus status; // 6. status VARCHAR(20) NOT NULL (OPEN / ADJUSTED / CLOSED / CANCELLED / DISCREPANCY_ALERT)
 
     @OneToMany(mappedBy = "stocktake", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
